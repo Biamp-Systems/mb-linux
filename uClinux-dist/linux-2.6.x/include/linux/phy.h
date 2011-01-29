@@ -335,6 +335,15 @@ struct phy_device {
 };
 #define to_phy_device(d) container_of(d, struct phy_device, dev)
 
+/* PHY test modes.  Some of these are defined by IEEE 802.3ab */
+#define PHY_TEST_NONE          (0x00)
+#define PHY_TEST_EXT_LOOP      (0x01)
+#define PHY_TEST_INT_LOOP      (0x02)
+#define PHY_TEST_TX_WAVEFORM   (0x03)
+#define PHY_TEST_MASTER_JITTER (0x04)
+#define PHY_TEST_SLAVE_JITTER  (0x05)
+#define PHY_TEST_TX_DISTORTION (0x06)
+
 /* struct phy_driver: Driver structure for a particular PHY type
  *
  * phy_id: The result of reading the UID registers of this PHY
@@ -423,6 +432,9 @@ struct phy_driver {
 	 * is passed in 'type'.
 	 */
 	void (*txtstamp)(struct phy_device *dev, struct sk_buff *skb, int type);
+
+	/* Places the PHY in or out of a test mode */
+	void (*set_test_mode)(struct phy_device *phydev, u32 mode);
 
 	struct device_driver driver;
 };

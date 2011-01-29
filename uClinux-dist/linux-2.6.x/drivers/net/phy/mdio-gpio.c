@@ -209,6 +209,8 @@ static int __devinit mdio_ofgpio_probe(struct platform_device *ofdev,
 		goto out_free;
 	pdata->mdio = ret;
 
+	pdata->phy_mask = (1<<PHY_MAX_ADDR)-1;
+
 	new_bus = mdio_gpio_bus_init(&ofdev->dev, pdata, pdata->mdc);
 	if (!new_bus)
 		goto out_free;

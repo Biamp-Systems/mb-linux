@@ -10,6 +10,9 @@ targets := linux.bin linux.bin.gz simpleImage.%
 
 OBJCOPYFLAGS := -O binary
 
+# Default flags to Device Tree Compiler
+DTS_FLAGS       ?= -p 1024
+
 # Where the DTS files live
 dtstree         := $(srctree)/$(src)/dts
 
@@ -43,6 +46,12 @@ quiet_cmd_uimage = UIMAGE  $@.ub
 		-C none -n 'Linux-$(KERNELRELEASE)' \
 		-a $(CONFIG_KERNEL_BASE_ADDR) -e $(CONFIG_KERNEL_BASE_ADDR) \
 		-d $@ $@.ub
+
+quiet_cmd_uimage = UIMAGE  $@.ub
+      cmd_uimage = $(CONFIG_SHELL) $(MKIMAGE) -A microblaze -O linux -T kernel \
+                   -C none -n 'Linux-$(KERNELRELEASE)' \
+                   -a $(CONFIG_KERNEL_BASE_ADDR) -e $(CONFIG_KERNEL_BASE_ADDR) \
+                   -d $@ $@.ub
 
 $(obj)/simpleImage.%: vmlinux FORCE
 	$(call if_changed,cp,.unstrip)

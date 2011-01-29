@@ -1171,6 +1171,16 @@ config SENSORS_MC13783_ADC
         help
           Support for the A/D converter on MC13783 PMIC.
 
+config SENSORS_AMC6821
+	tristate "Texas Instruments AMC6821"
+	depends on I2C  && EXPERIMENTAL
+	help
+	  If you say yes here you get support for the Texas Instruments
+	  AMC6821 hardware monitoring chips.
+
+	  This driver can also be build as a module.  If so, the module
+	  will be called amc6821.
+
 if ACPI
 
 comment "ACPI drivers"

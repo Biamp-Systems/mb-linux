@@ -20,10 +20,6 @@
 
 #include <asm/clinkage.h>
 
-#ifndef __NR_vfork
-#define __NR_vfork		190
-#endif
-
 /* Clone the calling process, but without copying the whole address space.
    The calling process is suspended until the new process exits or is
    replaced by a call to `execve'.  Return -1 for errors, 0 to the new process,
@@ -34,13 +30,13 @@
 C_ENTRY (__vfork):
 	addi	r12, r0, __NR_vfork
 	brki	r14, 0x08;
-	addi	r4, r3, 125		// minimum err value
-	blti	r4, 1f			// is r3 < -125?
-	bri	2f			// normal return
-1:	sub 	r3, r3, r0		// r3 = -r3
+	addi	r4, r3, 125		/* minimum err value */
+	blti	r4, 1f			/* is r3 < -125? */
+	rtsd	r15, 8			/* normal return */
+	nop
+1:	sub 	r3, r3, r0		/* r3 = -r3 */
 	swi	r3, r0, C_SYMBOL_NAME(errno);
-					// state restore etc
-2:	rtsd	r15, 8			// error return
+	rtsd	r15, 8			/* error return */
 	nop
 C_END(__vfork)
 weak_alias(__vfork,vfork)

@@ -4,6 +4,12 @@
 
 ccflags-$(CONFIG_SPI_DEBUG) := -DDEBUG
 
+# Include Xilinx common definitions
+EXTRA_CFLAGS += -I$(TOPDIR)/drivers/xilinx_common
+
+# SPI mailbox controller driver
+obj-$(CONFIG_SPI_MAILBOX)		+= biamp_spi_mailbox.o
+
 # small core, mostly translating board-specific
 # config declarations into driver model code
 obj-$(CONFIG_SPI_MASTER)		+= spi.o

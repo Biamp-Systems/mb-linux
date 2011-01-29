@@ -25,7 +25,9 @@
 # include <linux/errno.h>
 
 /* Linux has no ENOTSUP error code.  */
-# define ENOTSUP EOPNOTSUPP
+# ifndef ENOTSUP
+#  define ENOTSUP EOPNOTSUPP
+# endif
 
 /* Older Linux versions also had no ECANCELED error code.  */
 # ifndef ECANCELED
@@ -41,7 +43,6 @@
 # ifndef __ASSEMBLER__
 /* Function to get address of global `errno' variable.  */
 extern int *__errno_location (void) __THROW __attribute__ ((__const__));
-
 #  ifdef __UCLIBC_HAS_THREADS__
 /* When using threads, errno is a per-thread value.  */
 #   define errno (*__errno_location ())

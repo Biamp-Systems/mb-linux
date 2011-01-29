@@ -328,6 +328,11 @@ void XLlTemac_Reset(XLlTemac *InstancePtr, int HardCoreAction)
 	/* Stop the device and reset HW */
 	XLlTemac_Stop(InstancePtr);
 	InstancePtr->Options = XTE_DEFAULT_OPTIONS;
+	/* Enable extended filtering if available */
+	if(InstancePtr->Config.ExtFilter) 
+	  {
+	    InstancePtr->Options |= XTE_EXT_FILTER_OPTION;
+	  }
 
 	/* Reset the receiver */
 	xdbg_printf(XDBG_DEBUG_GENERAL, "resetting the receiver\n");
@@ -371,6 +376,13 @@ void XLlTemac_Reset(XLlTemac *InstancePtr, int HardCoreAction)
 		}
 	}
 
+	/* This driver supports new functions -- enable them */
+	Reg = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
+			       XTE_RAF_OFFSET);
+	XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+			  XTE_RAF_OFFSET, 
+			  Reg | XTE_RAF_NEWFUNC_MASK);
+	
 	/* Setup HW */
 	InitHw(InstancePtr);
 }
@@ -486,10 +498,10 @@ int XLlTemac_SetMacAddress(XLlTemac *InstancePtr, void *AddressPtr)
 	}
 
 	xdbg_printf(XDBG_DEBUG_GENERAL,
-		    "XLlTemac_SetMacAddress: setting mac address to: 0x%08x%8x%8x%8x%8x%8x\n",
+		    "XLlTemac_SetMacAddress: setting mac address to: %02x:%02x:%02x:%02x:%02x:%02x\n",
 		    Aptr[0], Aptr[1], Aptr[2], Aptr[3], Aptr[4], Aptr[5]);
 	/*
-	 * Set the MAC bits [31:0] in UAW0
+	 * Set the MAC bits [31:0] in UAW0 and UAWL
 	 * Having Aptr be unsigned type prevents the following operations from sign extending
 	 */
 	MacAddr = Aptr[0];
@@ -498,6 +510,8 @@ int XLlTemac_SetMacAddress(XLlTemac *InstancePtr, void *AddressPtr)
 	MacAddr |= Aptr[3] << 24;
 	XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
 				  XTE_UAW0_OFFSET, MacAddr);
+	XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+				  XTE_UAWL_OFFSET, MacAddr);
 
 	/* There are reserved bits in UAW1 so don't affect them */
 	MacAddr = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
@@ -509,6 +523,17 @@ int XLlTemac_SetMacAddress(XLlTemac *InstancePtr, void *AddressPtr)
 	MacAddr |= Aptr[5] << 8;
 	XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
 				  XTE_UAW1_OFFSET, MacAddr);
+
+	/* There are reserved bits in UAWU so don't affect them */
+	MacAddr = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
+					   XTE_UAWU_OFFSET);
+	MacAddr &= ~XTE_UAWU_UNICASTADDR_MASK;
+
+	/* Set MAC bits [47:32] in UAWU */
+	MacAddr |= Aptr[4];
+	MacAddr |= Aptr[5] << 8;
+	XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+				  XTE_UAWU_OFFSET, MacAddr);
 
 	return (XST_SUCCESS);
 }
@@ -589,6 +614,7 @@ void XLlTemac_GetMacAddress(XLlTemac *InstancePtr, void *AddressPtr)
 int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 {
 	u32 Reg;		/* Generic register contents */
+	u32 Reg1;		/* Generic register contents #1 */
 	u32 RegRcw1;		/* Reflects original contents of RCW1 */
 	u32 RegTc;		/* Reflects original contents of TC  */
 	u32 RegNewRcw1;		/* Reflects new contents of RCW1 */
@@ -622,6 +648,8 @@ int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 					 XTE_TC_OFFSET);
 	RegNewRcw1 = RegRcw1;
 	RegNewTc = RegTc;
+
+	xdbg_printf(XDBG_DEBUG_GENERAL, "setOptions 0x%08x\n",Options);
 
 	xdbg_printf(XDBG_DEBUG_GENERAL,
 		    "current control regs: RCW1: 0x%0x; TC: 0x%0x\n", RegRcw1,
@@ -693,7 +721,7 @@ int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 	/* Turn on flow control */
 	if (Options & XTE_FLOW_CONTROL_OPTION) {
 		xdbg_printf(XDBG_DEBUG_GENERAL,
-			    "setOptions: endabling flow control\n");
+			    "setOptions: enabling flow control\n");
 		Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
 					       XTE_FCC_OFFSET);
 		Reg |= XTE_FCC_FCRX_MASK;
@@ -708,7 +736,13 @@ int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 	/* Turn on promiscuous frame filtering (all frames are received ) */
 	if (Options & XTE_PROMISC_OPTION) {
 		xdbg_printf(XDBG_DEBUG_GENERAL,
-			    "setOptions: endabling promiscuous mode\n");
+			    "setOptions: enabling promiscuous mode\n");
+	        /* Promiscuous mode always disables extended filtering */
+		Reg = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
+					       XTE_RAF_OFFSET);
+		Reg &= ~XTE_RAF_EXT_FILTER_MASK;
+		XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+					  XTE_RAF_OFFSET, Reg);
 		Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
 					       XTE_AFM_OFFSET);
 		Reg |= XTE_AFM_PM_MASK;
@@ -738,6 +772,24 @@ int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 		Reg = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
 				       XTE_RAF_OFFSET);
 		Reg &= ~XTE_RAF_MCSTREJ_MASK;
+		/* If extended filtering is already on, and real promiscuous
+		   option is not set, and is not being turned on, disable
+		   promiscuous mode.
+		   This case does not cover turning extended filtering on
+		   (see below).
+		 */
+		if((InstancePtr->Options & XTE_EXT_FILTER_OPTION)
+		   && ! (InstancePtr->Options & XTE_PROMISC_OPTION)
+		   && ! (Options & XTE_PROMISC_OPTION))
+		  {
+		    Reg1 = XLlTemac_ReadIndirectReg(
+			   InstancePtr->Config.BaseAddress,
+			   XTE_AFM_OFFSET);
+		    Reg1 |= XTE_AFM_PM_MASK;
+		    XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
+				      XTE_AFM_OFFSET, Reg1);
+		      Reg |= XTE_RAF_EXT_FILTER_MASK | XTE_RAF_NEWFUNC_MASK;
+		  }
 		XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
 				  XTE_RAF_OFFSET, Reg);
 	}
@@ -745,6 +797,32 @@ int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 		    "setOptions: rcw1 is now (raf2): 0x%0x\n",
 		    XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
 					     XTE_RCW1_OFFSET));
+	/* Turning extended filtering option on only affects
+	registers if promiscuous mode is not on and is not being turned on,
+	otherwise extended filtering should remain off, and option will affect
+	what will happen when promiscuous mode will be turned off and multicast
+	remained on or turned on (see above).
+	*/
+	if ((Options & XTE_EXT_FILTER_OPTION)
+	    && ! (InstancePtr->Options & XTE_PROMISC_OPTION)
+	    && ! (Options & XTE_PROMISC_OPTION))
+	  {
+		Reg = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
+				       XTE_RAF_OFFSET);
+		Reg |= XTE_RAF_EXT_FILTER_MASK | XTE_RAF_NEWFUNC_MASK;
+		XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+				  XTE_RAF_OFFSET, Reg);
+		if( (Options & XTE_MULTICAST_OPTION)
+		    || (InstancePtr->Options & XTE_MULTICAST_OPTION))
+		  {
+		Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
+					   XTE_AFM_OFFSET);
+		    Reg |= XTE_AFM_PM_MASK;
+		    XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
+				      XTE_AFM_OFFSET, Reg);
+		  }
+	  }
+
 
 	/* The remaining options not handled here are managed elsewhere in the
 	 * driver. No register modifications are needed at this time. Reflecting the
@@ -753,6 +831,8 @@ int XLlTemac_SetOptions(XLlTemac *InstancePtr, u32 Options)
 
 	/* Set options word to its new value */
 	InstancePtr->Options |= Options;
+	xdbg_printf(XDBG_DEBUG_GENERAL,
+		    "SetOptions result: 0x%08x\n",InstancePtr->Options);
 
 	xdbg_printf(XDBG_DEBUG_GENERAL,
 		    "setOptions: rcw1 is now (end): 0x%0x\n",
@@ -908,15 +988,37 @@ int XLlTemac_ClearOptions(XLlTemac *InstancePtr, u32 Options)
 
 	/* Turn off promiscuous frame filtering */
 	if (Options & XTE_PROMISC_OPTION) {
-		xdbg_printf(XDBG_DEBUG_GENERAL,
-			    "Xtemac_ClearOptions: disabling promiscuous mode\n");
-		Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
-					       XTE_AFM_OFFSET);
-		Reg &= ~XTE_AFM_PM_MASK;
-		xdbg_printf(XDBG_DEBUG_GENERAL,
-			    "Xtemac_ClearOptions: setting AFM: 0x%0x\n", Reg);
-		XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
-					  XTE_AFM_OFFSET, Reg);
+		/*
+		 * if we don't have multicast enabled, or don't use extended
+		 * filtering, or turning those options off, disable promiscuous mode
+		 */
+		if((Options & XTE_MULTICAST_OPTION)
+			|| ! (InstancePtr->Options & XTE_MULTICAST_OPTION)
+			|| (Options & XTE_EXT_FILTER_OPTION)
+			|| ! (InstancePtr->Options & XTE_EXT_FILTER_OPTION))
+		{
+			xdbg_printf(XDBG_DEBUG_GENERAL,
+				"Xtemac_ClearOptions: disabling promiscuous mode\n");
+			Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
+						XTE_AFM_OFFSET);
+			Reg &= ~XTE_AFM_PM_MASK;
+			xdbg_printf(XDBG_DEBUG_GENERAL,
+				"Xtemac_ClearOptions: setting AFM: 0x%0x\n", Reg);
+			XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
+					XTE_AFM_OFFSET, Reg);
+		}
+		else
+		{
+			/*
+			 * keep promiscuous mode if we are using multicast with extended
+			 * filtering and are not turning those options off
+			 */
+			Reg = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
+					XTE_RAF_OFFSET);
+			Reg |= XTE_RAF_EXT_FILTER_MASK | XTE_RAF_NEWFUNC_MASK;
+			XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+				XTE_RAF_OFFSET, Reg);
+		}
 	}
 
 	/* Disable broadcast address filtering */
@@ -935,6 +1037,49 @@ int XLlTemac_ClearOptions(XLlTemac *InstancePtr, u32 Options)
 		Reg |= XTE_RAF_MCSTREJ_MASK;
 		XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
 				  XTE_RAF_OFFSET, Reg);
+    
+		/*
+		 * If extended filtering is enabled, and promiscuous mode is not,
+		 * disable the real promiscuous mode that was enabled to implement
+		 * multicast filtering.
+		 */
+		if((InstancePtr->Options & XTE_EXT_FILTER_OPTION)
+			&& ! (InstancePtr->Options & XTE_PROMISC_OPTION))
+		{
+			Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
+						XTE_AFM_OFFSET);
+	
+			if(! (InstancePtr->Options & XTE_PROMISC_OPTION))
+			{
+				Reg &= ~XTE_AFM_PM_MASK;
+			}
+			xdbg_printf(XDBG_DEBUG_GENERAL, 
+				"Xtemac_ClearOptions: setting AFM: 0x%0x\n", Reg);
+			XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
+						XTE_AFM_OFFSET, Reg);
+		}
+
+	}
+
+	/* Disable extended filtering */
+	if (Options & XTE_EXT_FILTER_OPTION)
+	{
+		Reg = XLlTemac_ReadReg(InstancePtr->Config.BaseAddress,
+		 		XTE_RAF_OFFSET);
+		Reg &= ~XTE_RAF_EXT_FILTER_MASK;
+		XLlTemac_WriteReg(InstancePtr->Config.BaseAddress,
+				XTE_RAF_OFFSET, Reg);
+		if( ! (InstancePtr->Options & XTE_PROMISC_OPTION))
+		{
+			Reg = XLlTemac_ReadIndirectReg(InstancePtr->Config.BaseAddress,
+			     			XTE_AFM_OFFSET);
+			Reg &= ~XTE_AFM_PM_MASK;
+			xdbg_printf(XDBG_DEBUG_GENERAL, 
+				"Xtemac_ClearOptions: setting AFM: 0x%0x\n", Reg);
+			XLlTemac_WriteIndirectReg(InstancePtr->Config.BaseAddress,
+					XTE_AFM_OFFSET, Reg);
+	    
+		}
 	}
 
 	/* The remaining options not handled here are managed elsewhere in the
@@ -944,7 +1089,9 @@ int XLlTemac_ClearOptions(XLlTemac *InstancePtr, u32 Options)
 
 	/* Set options word to its new value */
 	InstancePtr->Options &= ~Options;
-
+	xdbg_printf(XDBG_DEBUG_GENERAL, "ClearOptions result: 0x%08x\n",
+		InstancePtr->Options);
+  
 	return (XST_SUCCESS);
 }
 
@@ -1334,7 +1481,9 @@ void XLlTemac_PhyWrite(XLlTemac *InstancePtr, u32 PhyAddress,
 				      XTE_RDY_OFFSET) &
 		     XTE_RDY_HARD_ACS_RDY_MASK);
 
-	xdbg_printf(XDBG_DEBUG_GENERAL, "XLlTemac_PhyWrite\n");
+	xdbg_printf(XDBG_DEBUG_GENERAL,
+		    "XLlTemac_PhyWrite, register 0x%0x, value 0x%0x\n",
+		    RegisterNum,PhyData);
 	/*
 	 * XLlTemac_PhyWrite saves the state of the IE register so that it can
 	 * clear the HardAcsCmplt bit and later restore the state of the IE

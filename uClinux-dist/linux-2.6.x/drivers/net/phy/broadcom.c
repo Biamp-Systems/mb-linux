@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/phy.h>
 #include <linux/brcmphy.h>
+#include <linux/broadcom_leds.h>
 
 
 #define BRCM_PHY_MODEL(phydev) \
@@ -65,7 +66,9 @@
 /*
  * AUXILIARY CONTROL SHADOW ACCESS REGISTERS.  (PHY REG 0x18)
  */
-#define MII_BCM54XX_AUXCTL_SHDWSEL_AUXCTL	0x0000
+#define MII_BCM54XX_AUX_VAL(x)	(((x & 0x07) << 12) | (x & 0x07))
+#define MII_BCM54XX_AUX_DATA(x)	(x & 0x0ff8)
+
 #define MII_BCM54XX_AUXCTL_ACTL_TX_6DB		0x0400
 #define MII_BCM54XX_AUXCTL_ACTL_SMDSP_ENA	0x0800
 
@@ -95,6 +98,25 @@
 #define BCM_LED_SRC_OFF		0xe	/* Tied high */
 #define BCM_LED_SRC_ON		0xf	/* Tied low */
 
+
+/*
+ * BCM5481: Shadow registers
+ * Shadow values go into bits [14:10] of register 0x1c to select a shadow
+ * register to access.
+ */
+#define BCM5481_SHD_CLKALIGN 0x03	/* 00011: Clock Alignment Control register */
+#define BCM5481_SHD_DELAY_ENA (1 << 9)	/* RGMII Transmit Clock Delay enable */
+#define BCM5481_AUX_SKEW_ENA (1 << 8)	/* RGMII RXD to RXC Skew enable */
+
+/*
+ * BCM54XX: Shadow registers
+ * Shadow values go into bits [14:10] of register 0x1c to select a shadow
+ * register to access.
+ */
+#define BCM54XX_SHD_LEDS12	0x0d	/* 01101: LED 1 & 2 Selector */
+#define BCM54XX_SHD_LEDS34	0x0e	/* 01110: LED 3 & 4 Selector */
+#define BCM54XX_SHD_LEDS_LEDH(src)	((src & 0xf) << 4)
+#define BCM54XX_SHD_LEDS_LEDL(src)	((src & 0xf) << 0)
 
 /*
  * BCM5482: Shadow registers
@@ -185,6 +207,9 @@ MODULE_DESCRIPTION("Broadcom PHY driver");
 MODULE_AUTHOR("Maciej W. Rozycki");
 MODULE_LICENSE("GPL");
 
+#define MAX_LED_PHYS 8
+static struct phy_device *aPhys[MAX_LED_PHYS];
+
 /*
  * Indirect register access functions for the 1000BASE-T/100BASE-TX/10BASE-T
  * 0x1c shadow registers.
@@ -236,9 +261,18 @@ static int bcm54xx_exp_write(struct phy_device *phydev, u16 regnum, u16 val)
 	return ret;
 }
 
-static int bcm54xx_auxctl_write(struct phy_device *phydev, u16 regnum, u16 val)
+static int bcm54xx_auxctl_read(struct phy_device *phydev, u16 shadow)
 {
-	return phy_write(phydev, MII_BCM54XX_AUX_CTL, regnum | val);
+	phy_write(phydev, MII_BCM54XX_AUX_CTL, MII_BCM54XX_AUX_VAL(shadow));
+	return MII_BCM54XX_AUX_DATA(phy_read(phydev, MII_BCM54XX_AUX_CTL));
+}
+
+static int bcm54xx_auxctl_write(struct phy_device *phydev, u16 shadow, u16 val)
+{
+	return phy_write(phydev, MII_BCM54XX_AUX_CTL,
+			 MII_BCM54XX_SHD_WRITE |
+			 MII_BCM54XX_AUX_VAL(shadow) |
+			 MII_BCM54XX_AUX_DATA(val));
 }
 
 /* Needs SMDSP clock enabled via bcm54xx_phydsp_config() */
@@ -383,9 +417,66 @@ static void bcm54xx_adjust_rxrefclk(struct phy_device *phydev)
 		bcm54xx_shadow_write(phydev, BCM54XX_SHD_APD, val);
 }
 
+void bc_phy_led_set(int phyno, enum BC_PHY_LEDSEL whichLed, enum BC_PHY_LEDVAL val)
+{
+	u16 reg;
+	struct phy_device *phy;
+	if (phyno >= MAX_LED_PHYS || (phy = aPhys[phyno]) == 0) {
+		return;
+	}
+	if (val == BC_PHY_LED_OFF) {
+		val = BCM_LED_SRC_ON; /* Yes, I know - it's inverted.  Go figure. */
+	} else if (val == BC_PHY_LED_ON) {
+		val = BCM_LED_SRC_OFF;
+	} else if (val >= BC_PHY_LED_LINKSPD1 && val <= BC_PHY_LED_SRC_ON) {
+		val &= 0xf;
+	} else {
+		switch(whichLed) {
+		case BC_PHY_LED1:
+			val = BCM_LED_SRC_LINKSPD1;
+			break;
+		case BC_PHY_LED2:
+			val = BCM_LED_SRC_LINKSPD2;
+			break;
+		case BC_PHY_LED3:
+			val = BCM_LED_SRC_ACTIVITYLED;
+			break;
+		case BC_PHY_LED4:
+			val = BCM_LED_SRC_INTR;
+			break;
+		default:
+			val = BCM_LED_SRC_OFF;
+		}
+	}
+	switch (whichLed) {
+	case BC_PHY_LED1:
+		reg = bcm54xx_shadow_read(phy, BCM54XX_SHD_LEDS12);
+		reg = (reg & 0xf0) | BCM54XX_SHD_LEDS_LEDL(val);
+		bcm54xx_shadow_write(phy, BCM54XX_SHD_LEDS12, reg);
+		break;
+	case BC_PHY_LED2:
+		reg = bcm54xx_shadow_read(phy, BCM54XX_SHD_LEDS12);
+		reg = (reg & 0xf) | BCM54XX_SHD_LEDS_LEDH(val);
+		bcm54xx_shadow_write(phy, BCM54XX_SHD_LEDS12, reg);
+		break;
+	case BC_PHY_LED3:
+		reg = bcm54xx_shadow_read(phy, BCM54XX_SHD_LEDS34);
+		reg = (reg & 0xf0) | BCM54XX_SHD_LEDS_LEDL(val);
+		bcm54xx_shadow_write(phy, BCM54XX_SHD_LEDS34, reg);
+		break;
+	case BC_PHY_LED4:
+		reg = bcm54xx_shadow_read(phy, BCM54XX_SHD_LEDS34);
+		reg = (reg & 0xf) | BCM54XX_SHD_LEDS_LEDH(val);
+		bcm54xx_shadow_write(phy, BCM54XX_SHD_LEDS34, reg);
+		break;
+	}
+}
+EXPORT_SYMBOL(bc_phy_led_set);
+
 static int bcm54xx_config_init(struct phy_device *phydev)
 {
-	int reg, err;
+	int reg, err, i;
+	u32 phyaddr;
 
 	reg = phy_read(phydev, MII_BCM54XX_ECR);
 	if (reg < 0)
@@ -416,6 +507,12 @@ static int bcm54xx_config_init(struct phy_device *phydev)
 		bcm54xx_adjust_rxrefclk(phydev);
 
 	bcm54xx_phydsp_config(phydev);
+
+	for (phyaddr = phydev->addr, i = -1; phyaddr != 0; phyaddr >>= 1)
+		++i;
+	if (i >= 0 && i < MAX_LED_PHYS) {
+		aPhys[i] = phydev;
+	}
 
 	return 0;
 }
@@ -542,35 +639,55 @@ static int bcm54xx_config_intr(struct phy_device *phydev)
 static int bcm5481_config_aneg(struct phy_device *phydev)
 {
 	int ret;
+	u16 clkalign;
 
-	/* Aneg firsly. */
+	/* Do generic Aneg firsly. */
 	ret = genphy_config_aneg(phydev);
 
 	/* Then we can set up the delay. */
-	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID) {
-		u16 reg;
-
-		/*
-		 * There is no BCM5481 specification available, so down
-		 * here is everything we know about "register 0x18". This
-		 * at least helps BCM5481 to successfuly receive packets
-		 * on MPC8360E-RDK board. Peter Barada <peterb@logicpd.com>
-		 * says: "This sets delay between the RXD and RXC signals
-		 * instead of using trace lengths to achieve timing".
-		 */
-
-		/* Set RDX clk delay. */
-		reg = 0x7 | (0x7 << 12);
-		phy_write(phydev, 0x18, reg);
-
-		reg = phy_read(phydev, 0x18);
-		/* Set RDX-RXC skew. */
-		reg |= (1 << 8);
-		/* Write bits 14:0. */
-		reg |= (1 << 15);
-		phy_write(phydev, 0x18, reg);
+	#ifdef CONFIG_BCM8451_TX_CLOCKALIGN
+	/* RGMII Transmit Clock Delay: The RGMII transmit timing can be adjusted
+			 * by software control. TXD-to-GTXCLK clock delay time can be increased
+			 * by approximately 1.9 ns for 1000BASE-T mode, and between 2 ns to 6 ns
+			 * when in 10BASE-T or 100BASE-T mode by setting Register 1ch, SV 00011,
+			 * bit 9 = 1. Enabling this timing adjustment eliminates the need for
+			 * board trace delays as required by the RGMII specification.
+	    	 */
+	clkalign = bcm54xx_shadow_read(phydev, BCM5481_SHD_CLKALIGN);
+	if ((clkalign & BCM5481_SHD_DELAY_ENA) == 0) {
+		/* Turn on the BCM5481 RGMII Transmit Clock Delay */
+		bcm54xx_shadow_write(phydev, BCM5481_SHD_CLKALIGN,
+				BCM5481_SHD_DELAY_ENA);
+		printk("Set BCM5481 shadow delay for phy %d from 0x%x to 0x%x\n",
+				phydev->addr, clkalign,
+				bcm54xx_shadow_read(phydev, BCM5481_SHD_CLKALIGN));
 	}
-
+	#endif
+	#ifdef CONFIG_BCM8451_RX_CLOCKSKEW
+	/*
+	 * Skew time can be increased by approximately 1.9ns for
+	 * 1000BASE-T mode, 4 ns for 100BASE-T mode, and 50 ns for
+	 * 10BASE-T mode by setting Register 18h, SV 111, bit 8 = 1.
+	 * Enabling this timing adjustment eliminates the need for board
+	 * trace delays, as required by the RGMII specification.  This
+	 * at least helps BCM5481 to successfuly receive packets
+	 * on MPC8360E-RDK board. Peter Barada <peterb@logicpd.com>
+	 * says: "This sets delay between the RXD and RXC signals
+	 * instead of using trace lengths to achieve timing".
+	 * Reimplemented to use the (slightly) clearer aux control
+	 * shadow register read-write functions.
+	 */
+	/* Set RDX-to-RXC clk delay. */
+	clkalign = bcm54xx_auxctl_read(phydev, MII_BCM54XX_AUXCTL_SHDWSEL_MISC);
+	if ((clkalign & BCM5481_AUX_SKEW_ENA) == 0) {
+		/* Set RDX-RXC skew. */
+		bcm54xx_auxctl_write(phydev, MII_BCM54XX_AUXCTL_SHDWSEL_MISC,
+				clkalign | BCM5481_AUX_SKEW_ENA);
+		printk("Set BCM5481 shadow RXD-to-RXC clock skew for phy %d from 0x%x to 0x%x\n",
+				phydev->addr, clkalign,
+				bcm54xx_auxctl_read(phydev, MII_BCM54XX_AUXCTL_SHDWSEL_MISC));
+	}
+	#endif
 	return ret;
 }
 
@@ -684,6 +801,73 @@ static int brcm_fet_config_intr(struct phy_device *phydev)
 	return err;
 }
 
+/* MII_CTRL1000 register bits */
+#define BCM54610_NORMAL_MASK     (0x1FFF)
+#define BCM54610_TEST_TX_DIST    (0x8000)
+#define BCM54610_TEST_SLV_JITTER (0x6000)
+#define BCM54610_TEST_MST_JITTER (0x4000)
+#define BCM54610_TEST_TX_WAVE    (0x2000)
+#define BCM54610_MST_SLV_AUTO    (0x0000)
+#define BCM54610_MST_SLV_MANUAL  (0x1000)
+#define BCM54610_MANUAL_MASTER   (0x0800)
+#define BCM54610_MANUAL_SLAVE    (0x0000)
+
+/* Loopback register bits */
+#define BCM54610_LBR_EXT_LOOPBACK    (0x8000)
+#define BCM54610_LBR_TX_TEST_MODE    (0x0000)
+#define BCM54610_LBR_TX_NORMAL_MODE  (0x0400)
+
+static void bcm54610_set_test_mode(struct phy_device *phydev, u32 mode) {
+  /* Configure the PHY for the selected test mode */
+  switch(mode) {
+  case PHY_TEST_EXT_LOOP:
+    phy_write(phydev, MII_CTRL1000, 
+	      (BCM54610_MST_SLV_MANUAL | BCM54610_MANUAL_MASTER));
+    phy_write(phydev, MII_BMCR, (BMCR_FULLDPLX | BMCR_SPEED1000));
+    phy_write(phydev, MII_LBRERROR, 
+	      (BCM54610_LBR_EXT_LOOPBACK | BCM54610_LBR_TX_NORMAL_MODE));
+    phydev->autoneg = AUTONEG_DISABLE;
+    printk("BCM54610 external loopback configured; insert loopback jumper\n");
+    break;
+
+  case PHY_TEST_INT_LOOP:
+    phy_write(phydev, MII_BMCR, 
+              (BMCR_LOOPBACK | BMCR_FULLDPLX | BMCR_SPEED1000));
+    phydev->autoneg = AUTONEG_DISABLE;
+    printk("BCM54610 internal loopback configured\n");
+    break;
+
+  case PHY_TEST_TX_WAVEFORM:
+    printk("IEEE 802.3ba Transmit Waveform Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_TX_WAVE);
+    break;
+
+  case PHY_TEST_MASTER_JITTER:
+    printk("IEEE 802.3ba Master Jitter Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_MST_JITTER);
+    break;
+
+  case PHY_TEST_SLAVE_JITTER:
+    printk("IEEE 802.3ba Slave Jitter Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_SLV_JITTER);
+    break;
+
+  case PHY_TEST_TX_DISTORTION:
+    printk("IEEE 802.3ba Transmit Distortion Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_TX_DIST);
+    break;
+
+  default:
+    /* No test mode, normal operation */
+    phy_write(phydev, MII_LBRERROR, BCM54610_LBR_TX_NORMAL_MODE);
+    phy_write(phydev, MII_BMCR, (BMCR_ANENABLE | BMCR_FULLDPLX | BMCR_SPEED1000));
+    phy_write(phydev, MII_CTRL1000, 
+              (ADVERTISE_1000FULL | BCM54610_MST_SLV_AUTO));
+    phydev->autoneg = AUTONEG_ENABLE;
+    printk("BCM54610 set for normal operation\n");
+  }
+}
+
 static struct phy_driver bcm5411_driver = {
 	.phy_id		= PHY_ID_BCM5411,
 	.phy_id_mask	= 0xfffffff0,
@@ -776,7 +960,7 @@ static struct phy_driver bcm5482_driver = {
 
 static struct phy_driver bcm50610_driver = {
 	.phy_id		= PHY_ID_BCM50610,
-	.phy_id_mask	= 0xfffffff0,
+	.phy_id_mask	= 0xffffffff,
 	.name		= "Broadcom BCM50610",
 	.features	= PHY_GBIT_FEATURES |
 			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
@@ -802,6 +986,22 @@ static struct phy_driver bcm50610m_driver = {
 	.ack_interrupt	= bcm54xx_ack_interrupt,
 	.config_intr	= bcm54xx_config_intr,
 	.driver		= { .owner = THIS_MODULE },
+};
+
+static struct phy_driver bcm54610_driver = {
+	.phy_id		= PHY_ID_BCM54610,
+	.phy_id_mask	= 0xffffffff,
+	.name		= "Broadcom BCM54610",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= bcm54xx_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= bcm54xx_ack_interrupt,
+	.config_intr	= bcm54xx_config_intr,
+	.set_test_mode  = bcm54610_set_test_mode,
+	.driver 	= { .owner = THIS_MODULE },
 };
 
 static struct phy_driver bcm57780_driver = {
@@ -877,6 +1077,9 @@ static int __init broadcom_init(void)
 	ret = phy_driver_register(&bcm50610m_driver);
 	if (ret)
 		goto out_50610m;
+	ret = phy_driver_register(&bcm54610_driver);
+	if (ret)
+		goto out_54610;
 	ret = phy_driver_register(&bcm57780_driver);
 	if (ret)
 		goto out_57780;
@@ -895,6 +1098,8 @@ out_ac131:
 out_57780:
 	phy_driver_unregister(&bcm50610m_driver);
 out_50610m:
+	phy_driver_unregister(&bcm54610_driver);
+out_54610:
 	phy_driver_unregister(&bcm50610_driver);
 out_50610:
 	phy_driver_unregister(&bcm5482_driver);
@@ -917,6 +1122,7 @@ static void __exit broadcom_exit(void)
 	phy_driver_unregister(&bcm5241_driver);
 	phy_driver_unregister(&bcmac131_driver);
 	phy_driver_unregister(&bcm57780_driver);
+	phy_driver_unregister(&bcm54610_driver);
 	phy_driver_unregister(&bcm50610m_driver);
 	phy_driver_unregister(&bcm50610_driver);
 	phy_driver_unregister(&bcm5482_driver);
