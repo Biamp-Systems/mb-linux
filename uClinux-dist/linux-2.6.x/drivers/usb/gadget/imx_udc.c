@@ -29,6 +29,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/timer.h>
+#include <linux/slab.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -415,6 +416,13 @@ static int write_packet(struct imx_ep_struct *imx_ep, struct imx_request *req)
 	u8	*buf;
 	int	length, count, temp;
 
+	if (unlikely(__raw_readl(imx_ep->imx_usb->base +
+				 USB_EP_STAT(EP_NO(imx_ep))) & EPSTAT_ZLPS)) {
+		D_TRX(imx_ep->imx_usb->dev, "<%s> zlp still queued in EP %s\n",
+			__func__, imx_ep->ep.name);
+		return -1;
+	}
+
 	buf = req->req.buf + req->req.actual;
 	prefetch(buf);
 
@@ -734,9 +742,12 @@ static struct usb_request *imx_ep_alloc_request
 {
 	struct imx_request *req;
 
+	if (!usb_ep)
+		return NULL;
+
 	req = kzalloc(sizeof *req, gfp_flags);
-	if (!req || !usb_ep)
-		return 0;
+	if (!req)
+		return NULL;
 
 	INIT_LIST_HEAD(&req->queue);
 	req->in_use = 0;
@@ -1308,14 +1319,15 @@ static struct imx_udc_struct controller = {
  * USB gadged driver functions
  *******************************************************************************
  */
-int usb_gadget_register_driver(struct usb_gadget_driver *driver)
+int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
+		int (*bind)(struct usb_gadget *))
 {
 	struct imx_udc_struct *imx_usb = &controller;
 	int retval;
 
 	if (!driver
 		|| driver->speed < USB_SPEED_FULL
-		|| !driver->bind
+		|| !bind
 		|| !driver->disconnect
 		|| !driver->setup)
 			return -EINVAL;
@@ -1331,7 +1343,7 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 	retval = device_add(&imx_usb->gadget.dev);
 	if (retval)
 		goto fail;
-	retval = driver->bind(&imx_usb->gadget);
+	retval = bind(&imx_usb->gadget);
 	if (retval) {
 		D_ERR(imx_usb->dev, "<%s> bind to driver %s --> error %d\n",
 			__func__, driver->driver.name, retval);
@@ -1351,7 +1363,7 @@ fail:
 	imx_usb->gadget.dev.driver = NULL;
 	return retval;
 }
-EXPORT_SYMBOL(usb_gadget_register_driver);
+EXPORT_SYMBOL(usb_gadget_probe_driver);
 
 int usb_gadget_unregister_driver(struct usb_gadget_driver *driver)
 {
@@ -1392,7 +1404,8 @@ static int __init imx_udc_probe(struct platform_device *pdev)
 	struct clk *clk;
 	void __iomem *base;
 	int ret = 0;
-	int i, res_size;
+	int i;
+	resource_size_t res_size;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
@@ -1406,7 +1419,7 @@ static int __init imx_udc_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	res_size = res->end - res->start + 1;
+	res_size = resource_size(res);
 	if (!request_mem_region(res->start, res_size, res->name)) {
 		dev_err(&pdev->dev, "can't allocate %d bytes at %d address\n",
 			res_size, res->start);
@@ -1517,8 +1530,7 @@ static int __exit imx_udc_remove(struct platform_device *pdev)
 	clk_disable(imx_usb->clk);
 	iounmap(imx_usb->base);
 
-	release_mem_region(imx_usb->res->start,
-		imx_usb->res->end - imx_usb->res->start + 1);
+	release_mem_region(imx_usb->res->start, resource_size(imx_usb->res));
 
 	if (pdata->exit)
 		pdata->exit(&pdev->dev);

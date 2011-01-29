@@ -1,4 +1,4 @@
-w35und-objs :=			\
+w35und-y :=			\
 	mds.o			\
 	mlmetxrx.o		\
 	mto.o			\
@@ -7,7 +7,6 @@ w35und-objs :=			\
 	wb35reg.o		\
 	wb35rx.o		\
 	wb35tx.o		\
-	wbhal.o			\
 	wbusb.o			\
 
 

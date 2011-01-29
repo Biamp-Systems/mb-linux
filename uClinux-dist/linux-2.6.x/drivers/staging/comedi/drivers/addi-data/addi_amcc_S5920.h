@@ -6,7 +6,7 @@
  *	D-77833 Ottersweier
  *	Tel: +19(0)7223/9493-0
  *	Fax: +49(0)7223/9493-92
- *	http://www.addi-data-com
+ *	http://www.addi-data.com
  *	info@addi-data.com
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -22,6 +22,6 @@
 #define NVCMD_BEGIN_READ	(0x7 << 5)	/* nvRam begin read command */
 #define NVCMD_BEGIN_WRITE	(0x6 << 5)	/* EEPROM begin write command */
 
-INT i_AddiHeaderRW_ReadEeprom(INT i_NbOfWordsToRead,
-			      DWORD dw_PCIBoardEepromAddress,
-			      WORD w_EepromStartAddress, PWORD pw_DataRead);
+int i_AddiHeaderRW_ReadEeprom(int i_NbOfWordsToRead,
+			      unsigned int dw_PCIBoardEepromAddress,
+			      unsigned short w_EepromStartAddress, unsigned short *pw_DataRead);

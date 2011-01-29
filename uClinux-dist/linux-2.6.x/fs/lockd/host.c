@@ -87,18 +87,6 @@ static unsigned int nlm_hash_address(const struct sockaddr *sap)
 	return hash & (NLM_HOST_NRHASH - 1);
 }
 
-static void nlm_clear_port(struct sockaddr *sap)
-{
-	switch (sap->sa_family) {
-	case AF_INET:
-		((struct sockaddr_in *)sap)->sin_port = 0;
-		break;
-	case AF_INET6:
-		((struct sockaddr_in6 *)sap)->sin6_port = 0;
-		break;
-	}
-}
-
 /*
  * Common host lookup routine for server & client
  */
@@ -123,7 +111,7 @@ static struct nlm_host *nlm_lookup_host(struct nlm_lookup_host_info *ni)
 	 */
 	chain = &nlm_hosts[nlm_hash_address(ni->sap)];
 	hlist_for_each_entry(host, pos, chain, h_hash) {
-		if (!nlm_cmp_addr(nlm_addr(host), ni->sap))
+		if (!rpc_cmp_addr(nlm_addr(host), ni->sap))
 			continue;
 
 		/* See if we have an NSM handle for this client */
@@ -136,8 +124,8 @@ static struct nlm_host *nlm_lookup_host(struct nlm_lookup_host_info *ni)
 			continue;
 		if (host->h_server != ni->server)
 			continue;
-		if (ni->server &&
-		    !nlm_cmp_addr(nlm_srcaddr(host), ni->src_sap))
+		if (ni->server && ni->src_len != 0 &&
+		    !rpc_cmp_addr(nlm_srcaddr(host), ni->src_sap))
 			continue;
 
 		/* Move to head of hash chain. */
@@ -177,8 +165,9 @@ static struct nlm_host *nlm_lookup_host(struct nlm_lookup_host_info *ni)
 	host->h_addrbuf    = nsm->sm_addrbuf;
 	memcpy(nlm_addr(host), ni->sap, ni->salen);
 	host->h_addrlen = ni->salen;
-	nlm_clear_port(nlm_addr(host));
+	rpc_set_port(nlm_addr(host), 0);
 	memcpy(nlm_srcaddr(host), ni->src_sap, ni->src_len);
+	host->h_srcaddrlen = ni->src_len;
 	host->h_version    = ni->version;
 	host->h_proto      = ni->protocol;
 	host->h_rpcclnt    = NULL;
@@ -250,9 +239,6 @@ struct nlm_host *nlmclnt_lookup_host(const struct sockaddr *sap,
 				     const char *hostname,
 				     int noresvport)
 {
-	const struct sockaddr source = {
-		.sa_family	= AF_UNSPEC,
-	};
 	struct nlm_lookup_host_info ni = {
 		.server		= 0,
 		.sap		= sap,
@@ -261,8 +247,6 @@ struct nlm_host *nlmclnt_lookup_host(const struct sockaddr *sap,
 		.version	= version,
 		.hostname	= hostname,
 		.hostname_len	= strlen(hostname),
-		.src_sap	= &source,
-		.src_len	= sizeof(source),
 		.noresvport	= noresvport,
 	};
 
@@ -365,10 +349,10 @@ nlm_bind_host(struct nlm_host *host)
 			.to_retries	= 5U,
 		};
 		struct rpc_create_args args = {
+			.net		= &init_net,
 			.protocol	= host->h_proto,
 			.address	= nlm_addr(host),
 			.addrsize	= host->h_addrlen,
-			.saddress	= nlm_srcaddr(host),
 			.timeout	= &timeparms,
 			.servername	= host->h_name,
 			.program	= &nlm_program,
@@ -387,6 +371,8 @@ nlm_bind_host(struct nlm_host *host)
 			args.flags |= RPC_CLNT_CREATE_HARDRTRY;
 		if (host->h_noresvport)
 			args.flags |= RPC_CLNT_CREATE_NONPRIVPORT;
+		if (host->h_srcaddrlen)
+			args.saddress = nlm_srcaddr(host);
 
 		clnt = rpc_create(&args);
 		if (!IS_ERR(clnt))
@@ -491,8 +477,8 @@ again:	mutex_lock(&nlm_host_mutex);
 			}
 		}
 	}
-
 	mutex_unlock(&nlm_host_mutex);
+	nsm_release(nsm);
 }
 
 /*

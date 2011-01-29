@@ -69,9 +69,9 @@ static void shutdown_m32700ut_irq(unsigned int irq)
 	outl(M32R_ICUCR_ILEVEL7, port);
 }
 
-static struct hw_interrupt_type m32700ut_irq_type =
+static struct irq_chip m32700ut_irq_type =
 {
-	.typename = "M32700UT-IRQ",
+	.name = "M32700UT-IRQ",
 	.startup = startup_m32700ut_irq,
 	.shutdown = shutdown_m32700ut_irq,
 	.enable = enable_m32700ut_irq,
@@ -146,9 +146,9 @@ static void shutdown_m32700ut_pld_irq(unsigned int irq)
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
 
-static struct hw_interrupt_type m32700ut_pld_irq_type =
+static struct irq_chip m32700ut_pld_irq_type =
 {
-	.typename = "M32700UT-PLD-IRQ",
+	.name = "M32700UT-PLD-IRQ",
 	.startup = startup_m32700ut_pld_irq,
 	.shutdown = shutdown_m32700ut_pld_irq,
 	.enable = enable_m32700ut_pld_irq,
@@ -215,9 +215,9 @@ static void shutdown_m32700ut_lanpld_irq(unsigned int irq)
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
 
-static struct hw_interrupt_type m32700ut_lanpld_irq_type =
+static struct irq_chip m32700ut_lanpld_irq_type =
 {
-	.typename = "M32700UT-PLD-LAN-IRQ",
+	.name = "M32700UT-PLD-LAN-IRQ",
 	.startup = startup_m32700ut_lanpld_irq,
 	.shutdown = shutdown_m32700ut_lanpld_irq,
 	.enable = enable_m32700ut_lanpld_irq,
@@ -284,9 +284,9 @@ static void shutdown_m32700ut_lcdpld_irq(unsigned int irq)
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
 
-static struct hw_interrupt_type m32700ut_lcdpld_irq_type =
+static struct irq_chip m32700ut_lcdpld_irq_type =
 {
-	.typename = "M32700UT-PLD-LCD-IRQ",
+	.name = "M32700UT-PLD-LCD-IRQ",
 	.startup = startup_m32700ut_lcdpld_irq,
 	.shutdown = shutdown_m32700ut_lcdpld_irq,
 	.enable = enable_m32700ut_lcdpld_irq,

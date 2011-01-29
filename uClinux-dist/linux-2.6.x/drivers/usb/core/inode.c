@@ -39,15 +39,14 @@
 #include <linux/parser.h>
 #include <linux/notifier.h>
 #include <linux/seq_file.h>
+#include <linux/usb/hcd.h>
 #include <asm/byteorder.h>
 #include "usb.h"
-#include "hcd.h"
 
 #define USBFS_DEFAULT_DEVMODE (S_IWUSR | S_IRUGO)
 #define USBFS_DEFAULT_BUSMODE (S_IXUGO | S_IRUGO)
 #define USBFS_DEFAULT_LISTMODE S_IRUGO
 
-static struct super_operations usbfs_ops;
 static const struct file_operations default_file_operations;
 static struct vfsmount *usbfs_mount;
 static int usbfs_mount_count;	/* = 0 */
@@ -276,6 +275,7 @@ static struct inode *usbfs_get_inode (struct super_block *sb, int mode, dev_t de
 	struct inode *inode = new_inode(sb);
 
 	if (inode) {
+		inode->i_ino = get_next_ino();
 		inode->i_mode = mode;
 		inode->i_uid = current_fsuid();
 		inode->i_gid = current_fsgid();
@@ -376,6 +376,7 @@ static int usbfs_rmdir(struct inode *dir, struct dentry *dentry)
 	mutex_lock(&inode->i_mutex);
 	dentry_unhash(dentry);
 	if (usbfs_empty(dentry)) {
+		dont_mount(dentry);
 		drop_nlink(dentry->d_inode);
 		drop_nlink(dentry->d_inode);
 		dput(dentry);
@@ -444,7 +445,7 @@ static const struct file_operations default_file_operations = {
 	.llseek =	default_file_lseek,
 };
 
-static struct super_operations usbfs_ops = {
+static const struct super_operations usbfs_ops = {
 	.statfs =	simple_statfs,
 	.drop_inode =	generic_delete_inode,
 	.remount_fs =	remount,
@@ -511,13 +512,13 @@ static int fs_create_by_name (const char *name, mode_t mode,
 	*dentry = NULL;
 	mutex_lock(&parent->d_inode->i_mutex);
 	*dentry = lookup_one_len(name, parent, strlen(name));
-	if (!IS_ERR(dentry)) {
+	if (!IS_ERR(*dentry)) {
 		if ((mode & S_IFMT) == S_IFDIR)
 			error = usbfs_mkdir (parent->d_inode, *dentry, mode);
 		else 
 			error = usbfs_create (parent->d_inode, *dentry, mode);
 	} else
-		error = PTR_ERR(dentry);
+		error = PTR_ERR(*dentry);
 	mutex_unlock(&parent->d_inode->i_mutex);
 
 	return error;
@@ -572,16 +573,16 @@ static void fs_remove_file (struct dentry *dentry)
 
 /* --------------------------------------------------------------------- */
 
-static int usb_get_sb(struct file_system_type *fs_type,
-	int flags, const char *dev_name, void *data, struct vfsmount *mnt)
+static struct dentry *usb_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
 {
-	return get_sb_single(fs_type, flags, data, usbfs_fill_super, mnt);
+	return mount_single(fs_type, flags, data, usbfs_fill_super);
 }
 
 static struct file_system_type usb_fs_type = {
 	.owner =	THIS_MODULE,
 	.name =		"usbfs",
-	.get_sb =	usb_get_sb,
+	.mount =	usb_mount,
 	.kill_sb =	kill_litter_super,
 };
 

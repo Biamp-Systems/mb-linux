@@ -28,13 +28,21 @@
 #define R_MN10300_PCREL8	6	/* PC-relative 8-bit signed.  */
 #define R_MN10300_24		9	/* Direct 24 bit.  */
 #define R_MN10300_RELATIVE	23	/* Adjust by program base.  */
+#define R_MN10300_SYM_DIFF	33	/* Adjustment when relaxing. */
+#define R_MN10300_ALIGN 	34	/* Alignment requirement. */
+
+/*
+ * AM33/AM34 HW Capabilities
+ */
+#define HWCAP_MN10300_ATOMIC_OP_UNIT	1	/* Has AM34 Atomic Operations */
+
 
 /*
  * ELF register definitions..
  */
 typedef unsigned long elf_greg_t;
 
-#define ELF_NGREG (sizeof (struct pt_regs) / sizeof(elf_greg_t))
+#define ELF_NGREG ((sizeof(struct pt_regs) / sizeof(elf_greg_t)) - 1)
 typedef elf_greg_t elf_gregset_t[ELF_NGREG];
 
 #define ELF_NFPREG 32
@@ -44,8 +52,6 @@ typedef struct {
 	elf_fpreg_t	fpregs[ELF_NFPREG];
 	u_int32_t	fpcr;
 } elf_fpregset_t;
-
-extern int dump_fpu(struct pt_regs *, elf_fpregset_t *);
 
 /*
  * This is used to ensure we don't load something for the wrong architecture
@@ -75,7 +81,7 @@ do {									\
 	_ur->a1   = 0;	_ur->a0   = 0;	_ur->d1   = 0;	_ur->d0   = 0;	\
 } while (0)
 
-#define USE_ELF_CORE_DUMP
+#define CORE_DUMP_USE_REGSET
 #define ELF_EXEC_PAGESIZE	4096
 
 /*
@@ -128,7 +134,11 @@ do {						\
  * instruction set this CPU supports.  This could be done in user space,
  * but it's not easy, and we've already done it here.
  */
+#ifdef CONFIG_MN10300_HAS_ATOMIC_OPS_UNIT
+#define ELF_HWCAP	(HWCAP_MN10300_ATOMIC_OP_UNIT)
+#else
 #define ELF_HWCAP	(0)
+#endif
 
 /*
  * This yields a string that ld.so will use to load implementation

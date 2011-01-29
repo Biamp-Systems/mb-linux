@@ -30,9 +30,6 @@
 
 #include <linux/mtd/nand.h>
 
-#define NRCSR_OFFSET		0x00
-#define AWCCR_OFFSET		0x04
-#define A1CR_OFFSET		0x10
 #define NANDFCR_OFFSET		0x60
 #define NANDFSR_OFFSET		0x64
 #define NANDF1ECC_OFFSET	0x70
@@ -68,13 +65,24 @@ struct davinci_nand_pdata {		/* platform_data */
 
 	/* none  == NAND_ECC_NONE (strongly *not* advised!!)
 	 * soft  == NAND_ECC_SOFT
-	 * 1-bit == NAND_ECC_HW
-	 * 4-bit == NAND_ECC_HW_SYNDROME (not on all chips)
+	 * else  == NAND_ECC_HW, according to ecc_bits
+	 *
+	 * All DaVinci-family chips support 1-bit hardware ECC.
+	 * Newer ones also support 4-bit ECC, but are awkward
+	 * using it with large page chips.
 	 */
 	nand_ecc_modes_t	ecc_mode;
+	u8			ecc_bits;
 
 	/* e.g. NAND_BUSWIDTH_16 or NAND_USE_FLASH_BBT */
 	unsigned		options;
+
+	/* Main and mirror bbt descriptor overrides */
+	struct nand_bbt_descr	*bbt_td;
+	struct nand_bbt_descr	*bbt_md;
+
+	/* Access timings */
+	struct davinci_aemif_timing	*timing;
 };
 
 #endif	/* __ARCH_ARM_DAVINCI_NAND_H */

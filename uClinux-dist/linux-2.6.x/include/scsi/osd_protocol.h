@@ -17,6 +17,7 @@
 #define __OSD_PROTOCOL_H__
 
 #include <linux/types.h>
+#include <linux/kernel.h>
 #include <asm/unaligned.h>
 #include <scsi/scsi.h>
 
@@ -303,7 +304,15 @@ enum osd_service_actions {
 	OSD_ACT_V2(REMOVE_MEMBER_OBJECTS,	0x21)
 	OSD_ACT_V2(GET_MEMBER_ATTRIBUTES,	0x22)
 	OSD_ACT_V2(SET_MEMBER_ATTRIBUTES,	0x23)
+
+	OSD_ACT_V2(CREATE_CLONE,		0x28)
+	OSD_ACT_V2(CREATE_SNAPSHOT,		0x29)
+	OSD_ACT_V2(DETACH_CLONE,		0x2A)
+	OSD_ACT_V2(REFRESH_SNAPSHOT_CLONE,	0x2B)
+	OSD_ACT_V2(RESTORE_PARTITION_FROM_SNAPSHOT, 0x2C)
+
 	OSD_ACT_V2(READ_MAP,			0x31)
+	OSD_ACT_V2(READ_MAPS_COMPARE,		0x32)
 
 	OSD_ACT_V1_V2(PERFORM_SCSI_COMMAND,	0x8F7E, 0x8F7C)
 	OSD_ACT_V1_V2(SCSI_TASK_MANAGEMENT,	0x8F7F, 0x8F7D)
@@ -621,5 +630,47 @@ static inline void osd_sec_set_caps(struct osd_capability_head *cap,
 	 */
 	put_unaligned_le16(bit_mask, &cap->permissions_bit_mask);
 }
+
+/* osd2r05a sec 5.3: CDB continuation segment formats */
+enum osd_continuation_segment_format {
+	CDB_CONTINUATION_FORMAT_V2 = 0x01,
+};
+
+struct osd_continuation_segment_header {
+	u8	format;
+	u8	reserved1;
+	__be16	service_action;
+	__be32	reserved2;
+	u8	integrity_check[OSDv2_CRYPTO_KEYID_SIZE];
+} __packed;
+
+/* osd2r05a sec 5.4.1: CDB continuation descriptors */
+enum osd_continuation_descriptor_type {
+	NO_MORE_DESCRIPTORS = 0x0000,
+	SCATTER_GATHER_LIST = 0x0001,
+	QUERY_LIST = 0x0002,
+	USER_OBJECT = 0x0003,
+	COPY_USER_OBJECT_SOURCE = 0x0101,
+	EXTENSION_CAPABILITIES = 0xFFEE
+};
+
+struct osd_continuation_descriptor_header {
+	__be16	type;
+	u8	reserved;
+	u8	pad_length;
+	__be32	length;
+} __packed;
+
+
+/* osd2r05a sec 5.4.2: Scatter/gather list */
+struct osd_sg_list_entry {
+	__be64 offset;
+	__be64 len;
+};
+
+struct osd_sg_continuation_descriptor {
+	struct osd_continuation_descriptor_header hdr;
+	struct osd_sg_list_entry entries[];
+};
 
 #endif /* ndef __OSD_PROTOCOL_H__ */

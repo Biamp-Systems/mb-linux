@@ -32,6 +32,7 @@
 	#address-cells = <1>;
 	#size-cells = <1>;
 	compatible = "xlnx,microblaze";
+	hard-reset-gpios = <&LEDs_8Bit 2 1>;
 	model = "testing";
 	DDR2_SDRAM: memory@90000000 {
 		device_type = "memory";
@@ -84,6 +85,7 @@
 			xlnx,dynamic-bus-sizing = <0x1>;
 			xlnx,edge-is-positive = <0x1>;
 			xlnx,family = "virtex5";
+			xlnx,endianness = <0x1>;
 			xlnx,fpu-exception = <0x1>;
 			xlnx,fsl-data-size = <0x20>;
 			xlnx,fsl-exception = <0x0>;
@@ -217,6 +219,7 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 			compatible = "xlnx,compound";
+			ranges ;
 			ethernet@81c00000 {
 				compatible = "xlnx,xps-ll-temac-1.01.b", "xlnx,xps-ll-temac-1.00.a";
 				device_type = "network";
@@ -265,6 +268,33 @@
 			xlnx,is-dual = <0x0>;
 			xlnx,tri-default = <0xffffffff>;
 			xlnx,tri-default-2 = <0xffffffff>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		} ;
+
+		gpio-leds {
+			compatible = "gpio-leds";
+
+			heartbeat {
+				label = "Heartbeat";
+				gpios = <&LEDs_8Bit 4 1>;
+				linux,default-trigger = "heartbeat";
+			};
+
+			yellow {
+				label = "Yellow";
+				gpios = <&LEDs_8Bit 5 1>;
+			};
+
+			red {
+				label = "Red";
+				gpios = <&LEDs_8Bit 6 1>;
+			};
+
+			green {
+				label = "Green";
+				gpios = <&LEDs_8Bit 7 1>;
+			};
 		} ;
 		RS232_Uart_1: serial@84000000 {
 			clock-frequency = <125000000>;
@@ -304,6 +334,7 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 			compatible = "xlnx,mpmc-4.02.a";
+			ranges ;
 			PIM3: sdma@84600180 {
 				compatible = "xlnx,ll-dma-1.00.a";
 				interrupt-parent = <&xps_intc_0>;

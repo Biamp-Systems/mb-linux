@@ -11,10 +11,12 @@
 
 #ifdef __KERNEL__
 #include <asm/io.h>
+#include <linux/types.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/device.h>
 #include <linux/timer.h>
+#include <linux/slab.h>
 
 struct gameport {
 
@@ -45,16 +47,13 @@ struct gameport {
 	struct mutex drv_mutex;		/* protects serio->drv so attributes can pin driver */
 
 	struct device dev;
-	unsigned int registered;	/* port has been fully registered with driver core */
 
 	struct list_head node;
 };
 #define to_gameport_port(d)	container_of(d, struct gameport, dev)
 
 struct gameport_driver {
-
-	void *private;
-	char *description;
+	const char *description;
 
 	int (*connect)(struct gameport *, struct gameport_driver *drv);
 	int (*reconnect)(struct gameport *);
@@ -62,7 +61,7 @@ struct gameport_driver {
 
 	struct device_driver driver;
 
-	unsigned int ignore;
+	bool ignore;
 };
 #define to_gameport_driver(d)	container_of(d, struct gameport_driver, driver)
 

@@ -22,16 +22,22 @@
 #include <linux/smp.h>
 #include <linux/seq_file.h>
 #include <linux/irq.h>
+#include <linux/percpu.h>
+#include <linux/clockchips.h>
 
 #include <asm/atomic.h>
 #include <asm/cacheflush.h>
 #include <asm/cpu.h>
+#include <asm/cputype.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/processor.h>
+#include <asm/sections.h>
 #include <asm/tlbflush.h>
 #include <asm/ptrace.h>
+#include <asm/localtimer.h>
+#include <asm/smp_plat.h>
 
 /*
  * as from 2.5, kernels no longer have an init_tasks structure
@@ -62,12 +68,47 @@ enum ipi_msg_type {
 	IPI_CPU_STOP,
 };
 
+static inline void identity_mapping_add(pgd_t *pgd, unsigned long start,
+	unsigned long end)
+{
+	unsigned long addr, prot;
+	pmd_t *pmd;
+
+	prot = PMD_TYPE_SECT | PMD_SECT_AP_WRITE;
+	if (cpu_architecture() <= CPU_ARCH_ARMv5TEJ && !cpu_is_xscale())
+		prot |= PMD_BIT4;
+
+	for (addr = start & PGDIR_MASK; addr < end;) {
+		pmd = pmd_offset(pgd + pgd_index(addr), addr);
+		pmd[0] = __pmd(addr | prot);
+		addr += SECTION_SIZE;
+		pmd[1] = __pmd(addr | prot);
+		addr += SECTION_SIZE;
+		flush_pmd_entry(pmd);
+		outer_clean_range(__pa(pmd), __pa(pmd + 1));
+	}
+}
+
+static inline void identity_mapping_del(pgd_t *pgd, unsigned long start,
+	unsigned long end)
+{
+	unsigned long addr;
+	pmd_t *pmd;
+
+	for (addr = start & PGDIR_MASK; addr < end; addr += PGDIR_SIZE) {
+		pmd = pmd_offset(pgd + pgd_index(addr), addr);
+		pmd[0] = __pmd(0);
+		pmd[1] = __pmd(0);
+		clean_pmd_entry(pmd);
+		outer_clean_range(__pa(pmd), __pa(pmd + 1));
+	}
+}
+
 int __cpuinit __cpu_up(unsigned int cpu)
 {
 	struct cpuinfo_arm *ci = &per_cpu(cpu_data, cpu);
 	struct task_struct *idle = ci->idle;
 	pgd_t *pgd;
-	pmd_t *pmd;
 	int ret;
 
 	/*
@@ -81,6 +122,12 @@ int __cpuinit __cpu_up(unsigned int cpu)
 			return PTR_ERR(idle);
 		}
 		ci->idle = idle;
+	} else {
+		/*
+		 * Since this idle thread is being re-used, call
+		 * init_idle() to reinitialize the thread structure.
+		 */
+		init_idle(idle, cpu);
 	}
 
 	/*
@@ -90,10 +137,16 @@ int __cpuinit __cpu_up(unsigned int cpu)
 	 * a 1:1 mapping for the physical address of the kernel.
 	 */
 	pgd = pgd_alloc(&init_mm);
-	pmd = pmd_offset(pgd + pgd_index(PHYS_OFFSET), PHYS_OFFSET);
-	*pmd = __pmd((PHYS_OFFSET & PGDIR_MASK) |
-		     PMD_TYPE_SECT | PMD_SECT_AP_WRITE);
-	flush_pmd_entry(pmd);
+	if (!pgd)
+		return -ENOMEM;
+
+	if (PHYS_OFFSET != PAGE_OFFSET) {
+#ifndef CONFIG_HOTPLUG_CPU
+		identity_mapping_add(pgd, __pa(__init_begin), __pa(__init_end));
+#endif
+		identity_mapping_add(pgd, __pa(_stext), __pa(_etext));
+		identity_mapping_add(pgd, __pa(_sdata), __pa(_edata));
+	}
 
 	/*
 	 * We need to tell the secondary core where to find
@@ -101,7 +154,8 @@ int __cpuinit __cpu_up(unsigned int cpu)
 	 */
 	secondary_data.stack = task_stack_page(idle) + THREAD_START_SP;
 	secondary_data.pgdir = virt_to_phys(pgd);
-	wmb();
+	__cpuc_flush_dcache_area(&secondary_data, sizeof(secondary_data));
+	outer_clean_range(__pa(&secondary_data), __pa(&secondary_data + 1));
 
 	/*
 	 * Now bring the CPU into our world.
@@ -130,8 +184,14 @@ int __cpuinit __cpu_up(unsigned int cpu)
 	secondary_data.stack = NULL;
 	secondary_data.pgdir = 0;
 
-	*pmd = __pmd(0);
-	clean_pmd_entry(pmd);
+	if (PHYS_OFFSET != PAGE_OFFSET) {
+#ifndef CONFIG_HOTPLUG_CPU
+		identity_mapping_del(pgd, __pa(__init_begin), __pa(__init_end));
+#endif
+		identity_mapping_del(pgd, __pa(_stext), __pa(_etext));
+		identity_mapping_del(pgd, __pa(_sdata), __pa(_edata));
+	}
+
 	pgd_free(&init_mm, pgd);
 
 	if (ret) {
@@ -149,13 +209,13 @@ int __cpuinit __cpu_up(unsigned int cpu)
 /*
  * __cpu_disable runs on the processor to be shutdown.
  */
-int __cpuexit __cpu_disable(void)
+int __cpu_disable(void)
 {
 	unsigned int cpu = smp_processor_id();
 	struct task_struct *p;
 	int ret;
 
-	ret = mach_cpu_disable(cpu);
+	ret = platform_cpu_disable(cpu);
 	if (ret)
 		return ret;
 
@@ -163,7 +223,7 @@ int __cpuexit __cpu_disable(void)
 	 * Take this CPU offline.  Once we clear this, we can't return,
 	 * and we must not schedule until we're ready to give up the cpu.
 	 */
-	cpu_clear(cpu, cpu_online_map);
+	set_cpu_online(cpu, false);
 
 	/*
 	 * OK - migrate IRQs away from this CPU
@@ -185,7 +245,7 @@ int __cpuexit __cpu_disable(void)
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
 		if (p->mm)
-			cpu_clear(cpu, p->mm->cpu_vm_mask);
+			cpumask_clear_cpu(cpu, mm_cpumask(p->mm));
 	}
 	read_unlock(&tasklist_lock);
 
@@ -196,7 +256,7 @@ int __cpuexit __cpu_disable(void)
  * called on the thread which is asking for a CPU to be shutdown -
  * waits until shutdown has completed, or it is timed out.
  */
-void __cpuexit __cpu_die(unsigned int cpu)
+void __cpu_die(unsigned int cpu)
 {
 	if (!platform_cpu_kill(cpu))
 		printk("CPU%u: unable to kill\n", cpu);
@@ -210,7 +270,7 @@ void __cpuexit __cpu_die(unsigned int cpu)
  * of the other hotplug-cpu capable cores, so presumably coming
  * out of idle fixes this.
  */
-void __cpuexit cpu_die(void)
+void __ref cpu_die(void)
 {
 	unsigned int cpu = smp_processor_id();
 
@@ -250,10 +310,9 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 	 * All kernel threads share the same mm context; grab a
 	 * reference and switch to it.
 	 */
-	atomic_inc(&mm->mm_users);
 	atomic_inc(&mm->mm_count);
 	current->active_mm = mm;
-	cpu_set(cpu, mm->cpu_vm_mask);
+	cpumask_set_cpu(cpu, mm_cpumask(mm));
 	cpu_switch_mm(mm->pgd, mm);
 	enter_lazy_tlb(mm, current);
 	local_flush_tlb_all();
@@ -274,9 +333,9 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 	local_fiq_enable();
 
 	/*
-	 * Setup local timer for this CPU.
+	 * Setup the percpu timer for this CPU.
 	 */
-	local_timer_setup();
+	percpu_timer_setup();
 
 	calibrate_delay();
 
@@ -285,7 +344,7 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 	/*
 	 * OK, now it's safe to let the boot CPU continue
 	 */
-	cpu_set(cpu, cpu_online_map);
+	set_cpu_online(cpu, true);
 
 	/*
 	 * OK, it's off to the idle thread for us
@@ -383,10 +442,16 @@ void show_local_irqs(struct seq_file *p)
 	seq_putc(p, '\n');
 }
 
+/*
+ * Timer (local or broadcast) support
+ */
+static DEFINE_PER_CPU(struct clock_event_device, percpu_clockevent);
+
 static void ipi_timer(void)
 {
+	struct clock_event_device *evt = &__get_cpu_var(percpu_clockevent);
 	irq_enter();
-	local_timer_interrupt();
+	evt->event_handler(evt);
 	irq_exit();
 }
 
@@ -405,6 +470,46 @@ asmlinkage void __exception do_local_timer(struct pt_regs *regs)
 }
 #endif
 
+#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
+static void smp_timer_broadcast(const struct cpumask *mask)
+{
+	send_ipi_message(mask, IPI_TIMER);
+}
+#else
+#define smp_timer_broadcast	NULL
+#endif
+
+#ifndef CONFIG_LOCAL_TIMERS
+static void broadcast_timer_set_mode(enum clock_event_mode mode,
+	struct clock_event_device *evt)
+{
+}
+
+static void local_timer_setup(struct clock_event_device *evt)
+{
+	evt->name	= "dummy_timer";
+	evt->features	= CLOCK_EVT_FEAT_ONESHOT |
+			  CLOCK_EVT_FEAT_PERIODIC |
+			  CLOCK_EVT_FEAT_DUMMY;
+	evt->rating	= 400;
+	evt->mult	= 1;
+	evt->set_mode	= broadcast_timer_set_mode;
+
+	clockevents_register_device(evt);
+}
+#endif
+
+void __cpuinit percpu_timer_setup(void)
+{
+	unsigned int cpu = smp_processor_id();
+	struct clock_event_device *evt = &per_cpu(percpu_clockevent, cpu);
+
+	evt->cpumask = cpumask_of(cpu);
+	evt->broadcast = smp_timer_broadcast;
+
+	local_timer_setup(evt);
+}
+
 static DEFINE_SPINLOCK(stop_lock);
 
 /*
@@ -412,12 +517,15 @@ static DEFINE_SPINLOCK(stop_lock);
  */
 static void ipi_cpu_stop(unsigned int cpu)
 {
-	spin_lock(&stop_lock);
-	printk(KERN_CRIT "CPU%u: stopping\n", cpu);
-	dump_stack();
-	spin_unlock(&stop_lock);
+	if (system_state == SYSTEM_BOOTING ||
+	    system_state == SYSTEM_RUNNING) {
+		spin_lock(&stop_lock);
+		printk(KERN_CRIT "CPU%u: stopping\n", cpu);
+		dump_stack();
+		spin_unlock(&stop_lock);
+	}
 
-	cpu_clear(cpu, cpu_online_map);
+	set_cpu_online(cpu, false);
 
 	local_fiq_disable();
 	local_irq_disable();
@@ -501,16 +609,12 @@ void smp_send_reschedule(int cpu)
 	send_ipi_message(cpumask_of(cpu), IPI_RESCHEDULE);
 }
 
-void smp_timer_broadcast(const struct cpumask *mask)
-{
-	send_ipi_message(mask, IPI_TIMER);
-}
-
 void smp_send_stop(void)
 {
 	cpumask_t mask = cpu_online_map;
 	cpu_clear(smp_processor_id(), mask);
-	send_ipi_message(&mask, IPI_CPU_STOP);
+	if (!cpus_empty(mask))
+		send_ipi_message(&mask, IPI_CPU_STOP);
 }
 
 /*
@@ -587,51 +691,61 @@ static inline void ipi_flush_tlb_kernel_range(void *arg)
 
 void flush_tlb_all(void)
 {
-	on_each_cpu(ipi_flush_tlb_all, NULL, 1);
+	if (tlb_ops_need_broadcast())
+		on_each_cpu(ipi_flush_tlb_all, NULL, 1);
+	else
+		local_flush_tlb_all();
 }
 
 void flush_tlb_mm(struct mm_struct *mm)
 {
-	on_each_cpu_mask(ipi_flush_tlb_mm, mm, 1, &mm->cpu_vm_mask);
+	if (tlb_ops_need_broadcast())
+		on_each_cpu_mask(ipi_flush_tlb_mm, mm, 1, mm_cpumask(mm));
+	else
+		local_flush_tlb_mm(mm);
 }
 
 void flush_tlb_page(struct vm_area_struct *vma, unsigned long uaddr)
 {
-	struct tlb_args ta;
-
-	ta.ta_vma = vma;
-	ta.ta_start = uaddr;
-
-	on_each_cpu_mask(ipi_flush_tlb_page, &ta, 1, &vma->vm_mm->cpu_vm_mask);
+	if (tlb_ops_need_broadcast()) {
+		struct tlb_args ta;
+		ta.ta_vma = vma;
+		ta.ta_start = uaddr;
+		on_each_cpu_mask(ipi_flush_tlb_page, &ta, 1, mm_cpumask(vma->vm_mm));
+	} else
+		local_flush_tlb_page(vma, uaddr);
 }
 
 void flush_tlb_kernel_page(unsigned long kaddr)
 {
-	struct tlb_args ta;
-
-	ta.ta_start = kaddr;
-
-	on_each_cpu(ipi_flush_tlb_kernel_page, &ta, 1);
+	if (tlb_ops_need_broadcast()) {
+		struct tlb_args ta;
+		ta.ta_start = kaddr;
+		on_each_cpu(ipi_flush_tlb_kernel_page, &ta, 1);
+	} else
+		local_flush_tlb_kernel_page(kaddr);
 }
 
 void flush_tlb_range(struct vm_area_struct *vma,
                      unsigned long start, unsigned long end)
 {
-	struct tlb_args ta;
-
-	ta.ta_vma = vma;
-	ta.ta_start = start;
-	ta.ta_end = end;
-
-	on_each_cpu_mask(ipi_flush_tlb_range, &ta, 1, &vma->vm_mm->cpu_vm_mask);
+	if (tlb_ops_need_broadcast()) {
+		struct tlb_args ta;
+		ta.ta_vma = vma;
+		ta.ta_start = start;
+		ta.ta_end = end;
+		on_each_cpu_mask(ipi_flush_tlb_range, &ta, 1, mm_cpumask(vma->vm_mm));
+	} else
+		local_flush_tlb_range(vma, start, end);
 }
 
 void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
-	struct tlb_args ta;
-
-	ta.ta_start = start;
-	ta.ta_end = end;
-
-	on_each_cpu(ipi_flush_tlb_kernel_range, &ta, 1);
+	if (tlb_ops_need_broadcast()) {
+		struct tlb_args ta;
+		ta.ta_start = start;
+		ta.ta_end = end;
+		on_each_cpu(ipi_flush_tlb_kernel_range, &ta, 1);
+	} else
+		local_flush_tlb_kernel_range(start, end);
 }

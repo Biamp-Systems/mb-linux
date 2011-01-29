@@ -6,7 +6,7 @@
  *	D-77833 Ottersweier
  *	Tel: +19(0)7223/9493-0
  *	Fax: +49(0)7223/9493-92
- *	http://www.addi-data-com
+ *	http://www.addi-data.com
  *	info@addi-data.com
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -17,11 +17,11 @@
 
 /*********      Definitions for APCI-1500 card  *****/
 
-// Card Specific information
+/* Card Specific information */
 #define APCI1500_BOARD_VENDOR_ID           0x10e8
 #define APCI1500_ADDRESS_RANGE              4
 
-//DIGITAL INPUT-OUTPUT DEFINE
+/* DIGITAL INPUT-OUTPUT DEFINE */
 
 #define  APCI1500_DIGITAL_OP                 	2
 #define  APCI1500_DIGITAL_IP                    0

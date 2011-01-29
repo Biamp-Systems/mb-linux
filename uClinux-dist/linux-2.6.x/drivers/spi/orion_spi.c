@@ -358,19 +358,10 @@ static int orion_spi_setup(struct spi_device *spi)
 
 	orion_spi = spi_master_get_devdata(spi->master);
 
-	if (spi->mode) {
-		dev_err(&spi->dev, "setup: unsupported mode bits %x\n",
-			spi->mode);
-		return -EINVAL;
-	}
-
 	/* Fix ac timing if required.   */
 	if (orion_spi->spi_info->enable_clock_fix)
 		orion_spi_setbits(orion_spi, ORION_SPI_IF_CONFIG_REG,
 				  (1 << 14));
-
-	if (spi->bits_per_word == 0)
-		spi->bits_per_word = 8;
 
 	if ((spi->max_speed_hz == 0)
 			|| (spi->max_speed_hz > orion_spi->max_speed))
@@ -413,7 +404,7 @@ static int orion_spi_transfer(struct spi_device *spi, struct spi_message *m)
 			goto msg_rejected;
 		}
 
-		if ((t != NULL) && t->bits_per_word)
+		if (t->bits_per_word)
 			bits_per_word = t->bits_per_word;
 
 		if ((bits_per_word != 8) && (bits_per_word != 16)) {
@@ -424,7 +415,7 @@ static int orion_spi_transfer(struct spi_device *spi, struct spi_message *m)
 			goto msg_rejected;
 		}
 		/*make sure buffer length is even when working in 16 bit mode*/
-		if ((t != NULL) && (t->bits_per_word == 16) && (t->len & 1)) {
+		if ((t->bits_per_word == 16) && (t->len & 1)) {
 			dev_err(&spi->dev,
 				"message rejected : "
 				"odd data length (%d) while in 16 bit mode\n",
@@ -475,6 +466,9 @@ static int __init orion_spi_probe(struct platform_device *pdev)
 
 	if (pdev->id != -1)
 		master->bus_num = pdev->id;
+
+	/* we support only mode 0, and no options */
+	master->mode_bits = 0;
 
 	master->setup = orion_spi_setup;
 	master->transfer = orion_spi_transfer;

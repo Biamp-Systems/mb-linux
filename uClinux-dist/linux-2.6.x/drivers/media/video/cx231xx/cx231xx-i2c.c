@@ -359,7 +359,7 @@ static int cx231xx_i2c_xfer(struct i2c_adapter *i2c_adap,
 
 	if (num <= 0)
 		return 0;
-
+	mutex_lock(&dev->i2c_lock);
 	for (i = 0; i < num; i++) {
 
 		addr = msgs[i].addr >> 1;
@@ -372,6 +372,7 @@ static int cx231xx_i2c_xfer(struct i2c_adapter *i2c_adap,
 			rc = cx231xx_i2c_check_for_device(i2c_adap, &msgs[i]);
 			if (rc < 0) {
 				dprintk2(2, " no device\n");
+				mutex_unlock(&dev->i2c_lock);
 				return rc;
 			}
 
@@ -384,7 +385,7 @@ static int cx231xx_i2c_xfer(struct i2c_adapter *i2c_adap,
 			}
 		} else if (i + 1 < num && (msgs[i + 1].flags & I2C_M_RD) &&
 			   msgs[i].addr == msgs[i + 1].addr
-			   && (msgs[i].len <= 2) && (bus->nr < 2)) {
+			   && (msgs[i].len <= 2) && (bus->nr < 3)) {
 			/* read bytes */
 			rc = cx231xx_i2c_recv_bytes_with_saddr(i2c_adap,
 							       &msgs[i],
@@ -407,10 +408,11 @@ static int cx231xx_i2c_xfer(struct i2c_adapter *i2c_adap,
 		if (i2c_debug >= 2)
 			printk("\n");
 	}
-
+	mutex_unlock(&dev->i2c_lock);
 	return num;
 err:
 	dprintk2(2, " ERROR: %i\n", rc);
+	mutex_unlock(&dev->i2c_lock);
 	return rc;
 }
 
@@ -424,34 +426,6 @@ static u32 functionality(struct i2c_adapter *adap)
 	return I2C_FUNC_SMBUS_EMUL | I2C_FUNC_I2C;
 }
 
-/*
- * attach_inform()
- * gets called when a device attaches to the i2c bus
- * does some basic configuration
- */
-static int attach_inform(struct i2c_client *client)
-{
-	struct cx231xx_i2c *bus = i2c_get_adapdata(client->adapter);
-	struct cx231xx *dev = bus->dev;
-
-	switch (client->addr << 1) {
-	case 0x8e:
-		{
-			struct IR_i2c *ir = i2c_get_clientdata(client);
-			dprintk1(1, "attach_inform: IR detected (%s).\n",
-				 ir->phys);
-			cx231xx_set_ir(dev, ir);
-			break;
-		}
-		break;
-
-	default:
-		break;
-	}
-
-	return 0;
-}
-
 static struct i2c_algorithm cx231xx_algo = {
 	.master_xfer = cx231xx_i2c_xfer,
 	.functionality = functionality,
@@ -460,9 +434,7 @@ static struct i2c_algorithm cx231xx_algo = {
 static struct i2c_adapter cx231xx_adap_template = {
 	.owner = THIS_MODULE,
 	.name = "cx231xx",
-	.id = I2C_HW_B_CX231XX,
 	.algo = &cx231xx_algo,
-	.client_register = attach_inform,
 };
 
 static struct i2c_client cx231xx_client_template = {

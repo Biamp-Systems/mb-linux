@@ -67,6 +67,7 @@
 #endif
 #include <linux/vmalloc.h>
 #include <asm/io.h>
+#include <linux/kernel.h>		/* simple_strtol() */
 
 #include "pwc.h"
 #include "pwc-kiara.h"
@@ -161,13 +162,12 @@ static const struct v4l2_file_operations pwc_fops = {
 	.read =		pwc_video_read,
 	.poll =		pwc_video_poll,
 	.mmap =		pwc_video_mmap,
-	.ioctl =        pwc_video_ioctl,
+	.unlocked_ioctl = pwc_video_ioctl,
 };
 static struct video_device pwc_template = {
 	.name =		"Philips Webcam",	/* Filled in later */
 	.release =	video_device_release,
 	.fops =         &pwc_fops,
-	.minor =        -1,
 };
 
 /***************************************************************************/
@@ -601,7 +601,7 @@ static void pwc_snapshot_button(struct pwc_device *pdev, int down)
 
 #ifdef CONFIG_USB_PWC_INPUT_EVDEV
 	if (pdev->button_dev) {
-		input_report_key(pdev->button_dev, BTN_0, down);
+		input_report_key(pdev->button_dev, KEY_CAMERA, down);
 		input_sync(pdev->button_dev);
 	}
 #endif
@@ -1056,7 +1056,8 @@ static int pwc_create_sysfs_files(struct video_device *vdev)
 		goto err;
 	if (pdev->features & FEATURE_MOTOR_PANTILT) {
 		rc = device_create_file(&vdev->dev, &dev_attr_pan_tilt);
-		if (rc) goto err_button;
+		if (rc)
+			goto err_button;
 	}
 
 	return 0;
@@ -1071,6 +1072,7 @@ err:
 static void pwc_remove_sysfs_files(struct video_device *vdev)
 {
 	struct pwc_device *pdev = video_get_drvdata(vdev);
+
 	if (pdev->features & FEATURE_MOTOR_PANTILT)
 		device_remove_file(&vdev->dev, &dev_attr_pan_tilt);
 	device_remove_file(&vdev->dev, &dev_attr_button);
@@ -1228,13 +1230,11 @@ static void pwc_cleanup(struct pwc_device *pdev)
 	video_unregister_device(pdev->vdev);
 
 #ifdef CONFIG_USB_PWC_INPUT_EVDEV
-	if (pdev->button_dev) {
+	if (pdev->button_dev)
 		input_unregister_device(pdev->button_dev);
-		input_free_device(pdev->button_dev);
-		kfree(pdev->button_dev->phys);
-		pdev->button_dev = NULL;
-	}
 #endif
+
+	kfree(pdev);
 }
 
 /* Note that all cleanup is done in the reverse order as in _open */
@@ -1246,8 +1246,8 @@ static int pwc_video_close(struct file *file)
 
 	PWC_DEBUG_OPEN(">> video_close called(vdev = 0x%p).\n", vdev);
 
-	lock_kernel();
 	pdev = video_get_drvdata(vdev);
+	mutex_lock(&pdev->modlock);
 	if (pdev->vopen == 0)
 		PWC_DEBUG_MODULE("video_close() called on closed device?\n");
 
@@ -1280,14 +1280,12 @@ static int pwc_video_close(struct file *file)
 		PWC_DEBUG_OPEN("<< video_close() vopen=%d\n", pdev->vopen);
 	} else {
 		pwc_cleanup(pdev);
-		/* Free memory (don't set pdev to 0 just yet) */
-		kfree(pdev);
 		/* search device_hint[] table if we occupy a slot, by any chance */
 		for (hint = 0; hint < MAX_DEV_HINTS; hint++)
 			if (device_hint[hint].pdev == pdev)
 				device_hint[hint].pdev = NULL;
 	}
-	unlock_kernel();
+	mutex_unlock(&pdev->modlock);
 
 	return 0;
 }
@@ -1366,7 +1364,7 @@ static ssize_t pwc_video_read(struct file *file, char __user *buf,
 	}
 
 	PWC_DEBUG_READ("Copying data to user space.\n");
-	if (pdev->vpalette == VIDEO_PALETTE_RAW)
+	if (pdev->pixfmt != V4L2_PIX_FMT_YUV420)
 		bytes_to_read = pdev->frame_size + sizeof(struct pwc_raw_frame);
 	else
 		bytes_to_read = pdev->view.size;
@@ -1498,13 +1496,10 @@ static int usb_pwc_probe(struct usb_interface *intf, const struct usb_device_id 
 	struct usb_device *udev = interface_to_usbdev(intf);
 	struct pwc_device *pdev = NULL;
 	int vendor_id, product_id, type_id;
-	int i, hint, rc;
+	int hint, rc;
 	int features = 0;
 	int video_nr = -1; /* default: use next available device */
 	char serial_number[30], *name;
-#ifdef CONFIG_USB_PWC_INPUT_EVDEV
-	char *phys = NULL;
-#endif
 
 	vendor_id = le16_to_cpu(udev->descriptor.idVendor);
 	product_id = le16_to_cpu(udev->descriptor.idProduct);
@@ -1756,8 +1751,7 @@ static int usb_pwc_probe(struct usb_interface *intf, const struct usb_device_id 
 	pdev->vframes = default_fps;
 	strcpy(pdev->serial, serial_number);
 	pdev->features = features;
-	if (vendor_id == 0x046D && product_id == 0x08B5)
-	{
+	if (vendor_id == 0x046D && product_id == 0x08B5) {
 		/* Logitech QuickCam Orbit
 		   The ranges have been determined experimentally; they may differ from cam to cam.
 		   Also, the exact ranges left-right and up-down are different for my cam
@@ -1779,11 +1773,11 @@ static int usb_pwc_probe(struct usb_interface *intf, const struct usb_device_id 
 	pdev->vdev = video_device_alloc();
 	if (!pdev->vdev) {
 		PWC_ERROR("Err, cannot allocate video_device struture. Failing probe.");
-		kfree(pdev);
-		return -ENOMEM;
+		rc = -ENOMEM;
+		goto err_free_mem;
 	}
 	memcpy(pdev->vdev, &pwc_template, sizeof(pwc_template));
-	pdev->vdev->parent = &(udev->dev);
+	pdev->vdev->parent = &intf->dev;
 	strcpy(pdev->vdev->name, name);
 	video_set_drvdata(pdev->vdev, pdev);
 
@@ -1805,79 +1799,80 @@ static int usb_pwc_probe(struct usb_interface *intf, const struct usb_device_id 
 	}
 
 	pdev->vdev->release = video_device_release;
-	i = video_register_device(pdev->vdev, VFL_TYPE_GRABBER, video_nr);
-	if (i < 0) {
-		PWC_ERROR("Failed to register as video device (%d).\n", i);
-		rc = i;
-		goto err;
-	}
-	else {
-		PWC_INFO("Registered as /dev/video%d.\n", pdev->vdev->num);
-	}
 
 	/* occupy slot */
 	if (hint < MAX_DEV_HINTS)
 		device_hint[hint].pdev = pdev;
 
 	PWC_DEBUG_PROBE("probe() function returning struct at 0x%p.\n", pdev);
-	usb_set_intfdata (intf, pdev);
-	rc = pwc_create_sysfs_files(pdev->vdev);
-	if (rc)
-		goto err_unreg;
+	usb_set_intfdata(intf, pdev);
 
 	/* Set the leds off */
 	pwc_set_leds(pdev, 0, 0);
 	pwc_camera_power(pdev, 0);
+
+	rc = video_register_device(pdev->vdev, VFL_TYPE_GRABBER, video_nr);
+	if (rc < 0) {
+		PWC_ERROR("Failed to register as video device (%d).\n", rc);
+		goto err_video_release;
+	}
+	rc = pwc_create_sysfs_files(pdev->vdev);
+	if (rc)
+		goto err_video_unreg;
+
+	PWC_INFO("Registered as %s.\n", video_device_node_name(pdev->vdev));
 
 #ifdef CONFIG_USB_PWC_INPUT_EVDEV
 	/* register webcam snapshot button input device */
 	pdev->button_dev = input_allocate_device();
 	if (!pdev->button_dev) {
 		PWC_ERROR("Err, insufficient memory for webcam snapshot button device.");
-		return -ENOMEM;
+		rc = -ENOMEM;
+		pwc_remove_sysfs_files(pdev->vdev);
+		goto err_video_unreg;
 	}
 
+	usb_make_path(udev, pdev->button_phys, sizeof(pdev->button_phys));
+	strlcat(pdev->button_phys, "/input0", sizeof(pdev->button_phys));
+
 	pdev->button_dev->name = "PWC snapshot button";
-	phys = kasprintf(GFP_KERNEL,"usb-%s-%s", pdev->udev->bus->bus_name, pdev->udev->devpath);
-	if (!phys) {
-		input_free_device(pdev->button_dev);
-		return -ENOMEM;
-	}
-	pdev->button_dev->phys = phys;
+	pdev->button_dev->phys = pdev->button_phys;
 	usb_to_input_id(pdev->udev, &pdev->button_dev->id);
 	pdev->button_dev->dev.parent = &pdev->udev->dev;
 	pdev->button_dev->evbit[0] = BIT_MASK(EV_KEY);
-	pdev->button_dev->keybit[BIT_WORD(BTN_0)] = BIT_MASK(BTN_0);
+	pdev->button_dev->keybit[BIT_WORD(KEY_CAMERA)] = BIT_MASK(KEY_CAMERA);
 
 	rc = input_register_device(pdev->button_dev);
 	if (rc) {
 		input_free_device(pdev->button_dev);
-		kfree(pdev->button_dev->phys);
 		pdev->button_dev = NULL;
-		return rc;
+		pwc_remove_sysfs_files(pdev->vdev);
+		goto err_video_unreg;
 	}
 #endif
 
 	return 0;
 
-err_unreg:
+err_video_unreg:
 	if (hint < MAX_DEV_HINTS)
 		device_hint[hint].pdev = NULL;
 	video_unregister_device(pdev->vdev);
-err:
-	video_device_release(pdev->vdev); /* Drip... drip... drip... */
-	kfree(pdev); /* Oops, no memory leaks please */
+	pdev->vdev = NULL;	/* So we don't try to release it below */
+err_video_release:
+	video_device_release(pdev->vdev);
+err_free_mem:
+	kfree(pdev);
 	return rc;
 }
 
-/* The user janked out the cable... */
+/* The user yanked out the cable... */
 static void usb_pwc_disconnect(struct usb_interface *intf)
 {
 	struct pwc_device *pdev;
 	int hint;
 
-	lock_kernel();
 	pdev = usb_get_intfdata (intf);
+	mutex_lock(&pdev->modlock);
 	usb_set_intfdata (intf, NULL);
 	if (pdev == NULL) {
 		PWC_ERROR("pwc_disconnect() Called without private pointer.\n");
@@ -1901,17 +1896,13 @@ static void usb_pwc_disconnect(struct usb_interface *intf)
 	/* Alert waiting processes */
 	wake_up_interruptible(&pdev->frameq);
 	/* Wait until device is closed */
-	if(pdev->vopen) {
-		mutex_lock(&pdev->modlock);
+	if (pdev->vopen) {
 		pdev->unplugged = 1;
-		mutex_unlock(&pdev->modlock);
 		pwc_iso_stop(pdev);
 	} else {
 		/* Device is closed, so we can safely unregister it */
 		PWC_DEBUG_PROBE("Unregistering video device in disconnect().\n");
 		pwc_cleanup(pdev);
-		/* Free memory (don't set pdev to 0 just yet) */
-		kfree(pdev);
 
 disconnect_out:
 		/* search device_hint[] table if we occupy a slot, by any chance */
@@ -1920,20 +1911,7 @@ disconnect_out:
 				device_hint[hint].pdev = NULL;
 	}
 
-	unlock_kernel();
-}
-
-/* *grunt* We have to do atoi ourselves :-( */
-static int pwc_atoi(const char *s)
-{
-	int k = 0;
-
-	k = 0;
-	while (*s != '\0' && *s >= '0' && *s <= '9') {
-		k = 10 * k + (*s - '0');
-		s++;
-	}
-	return k;
+	mutex_unlock(&pdev->modlock);
 }
 
 
@@ -1967,7 +1945,9 @@ MODULE_PARM_DESC(size, "Initial image size. One of sqcif, qsif, qcif, sif, cif, 
 MODULE_PARM_DESC(fps, "Initial frames per second. Varies with model, useful range 5-30");
 MODULE_PARM_DESC(fbufs, "Number of internal frame buffers to reserve");
 MODULE_PARM_DESC(mbufs, "Number of external (mmap()ed) image buffers");
+#ifdef CONFIG_USB_PWC_DEBUG
 MODULE_PARM_DESC(trace, "For debugging purposes");
+#endif
 MODULE_PARM_DESC(power_save, "Turn power save feature in camera on or off");
 MODULE_PARM_DESC(compression, "Preferred compression quality. Range 0 (uncompressed) to 3 (high compression)");
 MODULE_PARM_DESC(leds, "LED on,off time in milliseconds");
@@ -2085,13 +2065,16 @@ static int __init usb_pwc_init(void)
 				}
 				else {
 					/* No type or serial number specified, just a number. */
-					device_hint[i].device_node = pwc_atoi(s);
+					device_hint[i].device_node =
+						simple_strtol(s, NULL, 10);
 				}
 			}
 			else {
 				/* There's a colon, so we have at least a type and a device node */
-				device_hint[i].type = pwc_atoi(s);
-				device_hint[i].device_node = pwc_atoi(colon + 1);
+				device_hint[i].type =
+					simple_strtol(s, NULL, 10);
+				device_hint[i].device_node =
+					simple_strtol(colon + 1, NULL, 10);
 				if (*dot != '\0') {
 					/* There's a serial number as well */
 					int k;

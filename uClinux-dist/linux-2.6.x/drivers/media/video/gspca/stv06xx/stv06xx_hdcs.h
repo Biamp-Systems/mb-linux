@@ -37,7 +37,7 @@
 #define HDCS_REG_CONTROL(sd)	(IS_1020(sd) ? HDCS20_CONTROL : HDCS00_CONTROL)
 
 #define HDCS_1X00_DEF_WIDTH	360
-#define HDCS_1X00_DEF_HEIGHT 	296
+#define HDCS_1X00_DEF_HEIGHT	296
 
 #define HDCS_1020_DEF_WIDTH	352
 #define HDCS_1020_DEF_HEIGHT	292
@@ -124,7 +124,7 @@
 #define HDCS_RUN_ENABLE		(1 << 2)
 #define HDCS_SLEEP_MODE		(1 << 1)
 
-#define HDCS_DEFAULT_EXPOSURE	5000
+#define HDCS_DEFAULT_EXPOSURE	48
 #define HDCS_DEFAULT_GAIN	128
 
 static int hdcs_probe_1x00(struct sd *sd);

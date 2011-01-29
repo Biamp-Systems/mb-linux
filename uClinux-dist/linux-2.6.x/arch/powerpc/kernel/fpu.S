@@ -55,6 +55,21 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX);					\
  * enable the FPU for the current task and return to the task.
  */
 _GLOBAL(load_up_fpu)
+#if defined(CONFIG_XILINX_VIRTEX_5_FXT) && defined(CONFIG_PPC_FPU)
+	li	r3,0
+	lis	r5,excep_state@h
+	ori	r5,r5,excep_state@l
+	stw	r3,0(r5)
+
+	mfspr   r5,SPRN_CCR0
+	/* set CCR0[9] to disable the load miss queue inside the ppc440 */
+	oris    r5,r5, (1<<6)
+	/* set CCR0[26] to ... */
+	ori	r5,r5, (1<<5)
+	mtspr   SPRN_CCR0,r5
+	isync
+#endif
+
 	mfmsr	r5
 	ori	r5,r5,MSR_FP
 #ifdef CONFIG_VSX
@@ -91,7 +106,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 #endif /* CONFIG_SMP */
 	/* enable use of FP after return */
 #ifdef CONFIG_PPC32
-	mfspr	r5,SPRN_SPRG3		/* current task's THREAD (phys) */
+	mfspr	r5,SPRN_SPRG_THREAD		/* current task's THREAD (phys) */
 	lwz	r4,THREAD_FPEXC_MODE(r5)
 	ori	r9,r9,MSR_FP		/* enable FP for current */
 	or	r9,r9,r4
@@ -122,6 +137,16 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
  * Enables the FPU for use in the kernel on return.
  */
 _GLOBAL(giveup_fpu)
+#if defined(CONFIG_XILINX_VIRTEX_5_FXT) && defined(CONFIG_PPC_FPU)
+	mfspr   r5,SPRN_CCR0
+	/* set CCR0[9] to disable the load miss queue inside the ppc440 */
+	oris    r5,r5, (1<<6)
+	/* set CCR0[26] to ... */
+	ori	r5,r5, (1<<5)
+	mtspr   SPRN_CCR0,r5
+	isync
+#endif
+
 	mfmsr	r5
 	ori	r5,r5,MSR_FP
 #ifdef CONFIG_VSX
@@ -163,24 +188,14 @@ END_FTR_SECTION_IFSET(CPU_FTR_VSX)
 /*
  * These are used in the alignment trap handler when emulating
  * single-precision loads and stores.
- * We restore and save the fpscr so the task gets the same result
- * and exceptions as if the cpu had performed the load or store.
  */
 
 _GLOBAL(cvt_fd)
-	lfd	0,THREAD_FPSCR(r5)	/* load up fpscr value */
-	MTFSF_L(0)
 	lfs	0,0(r3)
 	stfd	0,0(r4)
-	mffs	0
-	stfd	0,THREAD_FPSCR(r5)	/* save new fpscr value */
 	blr
 
 _GLOBAL(cvt_df)
-	lfd	0,THREAD_FPSCR(r5)	/* load up fpscr value */
-	MTFSF_L(0)
 	lfd	0,0(r3)
 	stfs	0,0(r4)
-	mffs	0
-	stfd	0,THREAD_FPSCR(r5)	/* save new fpscr value */
 	blr

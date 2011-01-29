@@ -1,8 +1,10 @@
 # Makefile for xmon
 
-ifdef CONFIG_PPC64
-EXTRA_CFLAGS += -mno-minimal-toc
-endif
+subdir-ccflags-$(CONFIG_PPC_WERROR) := -Werror
+
+GCOV_PROFILE := n
+
+ccflags-$(CONFIG_PPC64) := -mno-minimal-toc
 
 obj-y			+= xmon.o start.o nonstdio.o
 

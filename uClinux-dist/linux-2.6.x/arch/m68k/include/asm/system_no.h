@@ -2,6 +2,7 @@
 #define _M68KNOMMU_SYSTEM_H
 
 #include <linux/linkage.h>
+#include <linux/irqflags.h>
 #include <asm/segment.h>
 #include <asm/entry.h>
 
@@ -46,54 +47,6 @@ asmlinkage void resume(void);
   (last) = _last;						\
 }
 
-#ifdef CONFIG_COLDFIRE
-#define local_irq_enable() __asm__ __volatile__ (		\
-	"move %/sr,%%d0\n\t"					\
-	"andi.l #0xf8ff,%%d0\n\t"				\
-	"move %%d0,%/sr\n"					\
-	: /* no outputs */					\
-	:							\
-        : "cc", "%d0", "memory")
-#define local_irq_disable() __asm__ __volatile__ (		\
-	"move %/sr,%%d0\n\t"					\
-	"ori.l #0x0700,%%d0\n\t"				\
-	"move %%d0,%/sr\n"					\
-	: /* no outputs */					\
-	:							\
-	: "cc", "%d0", "memory")
-/* For spinlocks etc */
-#define local_irq_save(x) __asm__ __volatile__ (		\
-	"movew %%sr,%0\n\t"					\
-	"movew #0x0700,%%d0\n\t"				\
-	"or.l  %0,%%d0\n\t"					\
-	"movew %%d0,%/sr"					\
-	: "=d" (x)						\
-	:							\
-	: "cc", "%d0", "memory")
-#else
-
-/* portable version */ /* FIXME - see entry.h*/
-#define ALLOWINT 0xf8ff
-
-#define local_irq_enable() asm volatile ("andiw %0,%%sr": : "i" (ALLOWINT) : "memory")
-#define local_irq_disable() asm volatile ("oriw  #0x0700,%%sr": : : "memory")
-#endif
-
-#define local_save_flags(x) asm volatile ("movew %%sr,%0":"=d" (x) : : "memory")
-#define local_irq_restore(x) asm volatile ("movew %0,%%sr": :"d" (x) : "memory")
-
-/* For spinlocks etc */
-#ifndef local_irq_save
-#define local_irq_save(x) do { local_save_flags(x); local_irq_disable(); } while (0)
-#endif
-
-#define	irqs_disabled()			\
-({					\
-	unsigned long flags;		\
-	local_save_flags(flags);	\
-	((flags & 0x0700) == 0x0700);	\
-})
-
 #define iret() __asm__ __volatile__ ("rte": : :"memory", "sp", "cc")
 
 /*
@@ -106,17 +59,10 @@ asmlinkage void resume(void);
 #define wmb()  asm volatile (""   : : :"memory")
 #define set_mb(var, value)	({ (var) = (value); wmb(); })
 
-#ifdef CONFIG_SMP
-#define smp_mb()	mb()
-#define smp_rmb()	rmb()
-#define smp_wmb()	wmb()
-#define smp_read_barrier_depends()	read_barrier_depends()
-#else
 #define smp_mb()	barrier()
 #define smp_rmb()	barrier()
 #define smp_wmb()	barrier()
 #define smp_read_barrier_depends()	do { } while(0)
-#endif
 
 #define read_barrier_depends()  ((void)0)
 
@@ -199,126 +145,9 @@ static inline unsigned long __xchg(unsigned long x, volatile void * ptr, int siz
 			(unsigned long)(n), sizeof(*(ptr))))
 #define cmpxchg64_local(ptr, o, n) __cmpxchg64_local_generic((ptr), (o), (n))
 
-#ifndef CONFIG_SMP
 #include <asm-generic/cmpxchg.h>
-#endif
 
-#if defined( CONFIG_M68328 ) || defined( CONFIG_M68EZ328 ) || \
-	defined (CONFIG_M68360) || defined( CONFIG_M68VZ328 )
-#define HARD_RESET_NOW() ({		\
-        local_irq_disable();		\
-        asm("				\
-        moveal #0x10c00000, %a0;	\
-        moveb #0, 0xFFFFF300;		\
-        moveal 0(%a0), %sp;		\
-        moveal 4(%a0), %a0;		\
-        jmp (%a0);			\
-        ");				\
-})
-#endif
-
-#ifdef CONFIG_COLDFIRE
-#if defined(CONFIG_M5272) && defined(CONFIG_NETtel)
-/*
- * Need to account for broken early mask of 5272 silicon. So don't
- * jump through the original start address. Jump strait into the
- * known start of the FLASH code.
- */
-#define HARD_RESET_NOW() ({		\
-        asm("				\
-	movew #0x2700, %sr;		\
-        jmp 0xf0000400;			\
-        ");				\
-})
-#elif defined(CONFIG_NETtel) || \
-      defined(CONFIG_SECUREEDGEMP3) || defined(CONFIG_CLEOPATRA)
-#define HARD_RESET_NOW() ({		\
-        asm("				\
-	movew #0x2700, %sr;		\
-	moveal #0x10000044, %a0;	\
-	movel #0xffffffff, (%a0);	\
-	moveal #0x10000001, %a0;	\
-	moveb #0x00, (%a0);		\
-        moveal #0xf0000004, %a0;	\
-        moveal (%a0), %a0;		\
-        jmp (%a0);			\
-        ");				\
-})
-#elif defined(CONFIG_M5272)
-/*
- * Retrieve the boot address in flash using CSBR0 and CSOR0
- * find the reset vector at flash_address + 4 (e.g. 0x400)
- * remap it in the flash's current location (e.g. 0xf0000400)
- * and jump there.
- */ 
-#define HARD_RESET_NOW() ({		\
-	asm("				\
-	movew #0x2700, %%sr;		\
-	move.l	%0+0x40,%%d0;		\
-	and.l	%0+0x44,%%d0;		\
-	andi.l	#0xfffff000,%%d0;	\
-	mov.l	%%d0,%%a0;		\
-	or.l	4(%%a0),%%d0;		\
-	mov.l	%%d0,%%a0;		\
-	jmp (%%a0);"			\
-	: /* No output */		\
-	: "o" (*(char *)MCF_MBAR) );	\
-})
-#elif defined(CONFIG_M528x)
-/*
- * The MCF528x has a bit (SOFTRST) in memory (Reset Control Register RCR),
- * that when set, resets the MCF528x.
- */
-#define HARD_RESET_NOW() \
-({						\
-	unsigned char volatile *reset;		\
-	asm("move.w	#0x2700, %sr");		\
-	reset = ((volatile unsigned char *)(MCF_IPSBAR + 0x110000));	\
-	while(1)				\
-	*reset |= (0x01 << 7);\
-})
-#elif defined(CONFIG_M523x)
-#define HARD_RESET_NOW() ({		\
-	asm("				\
-	movew #0x2700, %sr;		\
-	movel #0x01000000, %sp;		\
-	moveal #0x40110000, %a0;	\
-	moveb #0x80, (%a0);		\
-	");				\
-})
-#elif defined(CONFIG_M520x)
-	/*
-	 * The MCF5208 has a bit (SOFTRST) in memory (Reset Control Register 
-	 * RCR), that when set, resets the MCF5208.
-	 */
-#define HARD_RESET_NOW() 		\
-({					\
-	unsigned char volatile *reset;	\
-	asm("move.w     #0x2700, %sr");	\
-	reset = ((volatile unsigned char *)(MCF_IPSBAR + 0xA0000));	\
-	while(1)			\
-		*reset |= 0x80;		\
-})
-#else
-#define HARD_RESET_NOW() ({		\
-        asm("				\
-	movew #0x2700, %sr;		\
-        moveal #0x4, %a0;		\
-        moveal (%a0), %a0;		\
-        jmp (%a0);			\
-        ");				\
-})
-#endif
-#endif
 #define arch_align_stack(x) (x)
 
-
-static inline int irqs_disabled_flags(unsigned long flags)
-{
-	if (flags & 0x0700)
-		return 0;
-	else
-		return 1;
-}
 
 #endif /* _M68KNOMMU_SYSTEM_H */

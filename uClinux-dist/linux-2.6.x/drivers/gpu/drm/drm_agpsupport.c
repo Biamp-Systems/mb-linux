@@ -33,6 +33,7 @@
 
 #include "drmP.h"
 #include <linux/module.h>
+#include <linux/slab.h>
 
 #if __OS_HAS_AGP
 
@@ -192,7 +193,7 @@ int drm_agp_enable_ioctl(struct drm_device *dev, void *data,
  * \return zero on success or a negative number on failure.
  *
  * Verifies the AGP device is present and has been acquired, allocates the
- * memory via alloc_agp() and creates a drm_agp_mem entry for it.
+ * memory via agp_allocate_memory() and creates a drm_agp_mem entry for it.
  */
 int drm_agp_alloc(struct drm_device *dev, struct drm_agp_buffer *request)
 {
@@ -203,15 +204,15 @@ int drm_agp_alloc(struct drm_device *dev, struct drm_agp_buffer *request)
 
 	if (!dev->agp || !dev->agp->acquired)
 		return -EINVAL;
-	if (!(entry = drm_alloc(sizeof(*entry), DRM_MEM_AGPLISTS)))
+	if (!(entry = kmalloc(sizeof(*entry), GFP_KERNEL)))
 		return -ENOMEM;
 
 	memset(entry, 0, sizeof(*entry));
 
 	pages = (request->size + PAGE_SIZE - 1) / PAGE_SIZE;
 	type = (u32) request->type;
-	if (!(memory = drm_alloc_agp(dev, pages, type))) {
-		drm_free(entry, sizeof(*entry), DRM_MEM_AGPLISTS);
+	if (!(memory = agp_allocate_memory(dev->agp->bridge, pages, type))) {
+		kfree(entry);
 		return -ENOMEM;
 	}
 
@@ -369,7 +370,7 @@ int drm_agp_free(struct drm_device *dev, struct drm_agp_buffer *request)
 	list_del(&entry->head);
 
 	drm_free_agp(entry->memory, entry->pages);
-	drm_free(entry, sizeof(*entry), DRM_MEM_AGPLISTS);
+	kfree(entry);
 	return 0;
 }
 EXPORT_SYMBOL(drm_agp_free);
@@ -397,13 +398,13 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 {
 	struct drm_agp_head *head = NULL;
 
-	if (!(head = drm_alloc(sizeof(*head), DRM_MEM_AGPLISTS)))
+	if (!(head = kmalloc(sizeof(*head), GFP_KERNEL)))
 		return NULL;
 	memset((void *)head, 0, sizeof(*head));
 	head->bridge = agp_find_bridge(dev->pdev);
 	if (!head->bridge) {
 		if (!(head->bridge = agp_backend_acquire(dev->pdev))) {
-			drm_free(head, sizeof(*head), DRM_MEM_AGPLISTS);
+			kfree(head);
 			return NULL;
 		}
 		agp_copy_info(head->bridge, &head->agp_info);
@@ -412,7 +413,7 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 		agp_copy_info(head->bridge, &head->agp_info);
 	}
 	if (head->agp_info.chipset == NOT_SUPPORTED) {
-		drm_free(head, sizeof(*head), DRM_MEM_AGPLISTS);
+		kfree(head);
 		return NULL;
 	}
 	INIT_LIST_HEAD(&head->memory);
@@ -420,38 +421,6 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 	head->page_mask = head->agp_info.page_mask;
 	head->base = head->agp_info.aper_base;
 	return head;
-}
-
-/** Calls agp_allocate_memory() */
-DRM_AGP_MEM *drm_agp_allocate_memory(struct agp_bridge_data * bridge,
-				     size_t pages, u32 type)
-{
-	return agp_allocate_memory(bridge, pages, type);
-}
-
-/** Calls agp_free_memory() */
-int drm_agp_free_memory(DRM_AGP_MEM * handle)
-{
-	if (!handle)
-		return 0;
-	agp_free_memory(handle);
-	return 1;
-}
-
-/** Calls agp_bind_memory() */
-int drm_agp_bind_memory(DRM_AGP_MEM * handle, off_t start)
-{
-	if (!handle)
-		return -EINVAL;
-	return agp_bind_memory(handle, start);
-}
-
-/** Calls agp_unbind_memory() */
-int drm_agp_unbind_memory(DRM_AGP_MEM * handle)
-{
-	if (!handle)
-		return -EINVAL;
-	return agp_unbind_memory(handle);
 }
 
 /**
@@ -473,7 +442,7 @@ drm_agp_bind_pages(struct drm_device *dev,
 
 	DRM_DEBUG("\n");
 
-	mem = drm_agp_allocate_memory(dev->agp->bridge, num_pages,
+	mem = agp_allocate_memory(dev->agp->bridge, num_pages,
 				      type);
 	if (mem == NULL) {
 		DRM_ERROR("Failed to allocate memory for %ld pages\n",
@@ -482,11 +451,11 @@ drm_agp_bind_pages(struct drm_device *dev,
 	}
 
 	for (i = 0; i < num_pages; i++)
-		mem->memory[i] = phys_to_gart(page_to_phys(pages[i]));
+		mem->pages[i] = pages[i];
 	mem->page_count = num_pages;
 
 	mem->is_flushed = true;
-	ret = drm_agp_bind_memory(mem, gtt_offset / PAGE_SIZE);
+	ret = agp_bind_memory(mem, gtt_offset / PAGE_SIZE);
 	if (ret != 0) {
 		DRM_ERROR("Failed to bind AGP memory: %d\n", ret);
 		agp_free_memory(mem);

@@ -16,7 +16,11 @@
 
 #define PCIE_LTSSM	0x0404		/* PCIE Link Training and Status */
 #define PCIE_LTSSM_L0	0x16		/* L0 state */
-#define PIWAR_2G	0xa0f5501e	/* Enable, Prefetch, Local Mem, Snoop R/W, 2G */
+#define PIWAR_EN		0x80000000	/* Enable */
+#define PIWAR_PF		0x20000000	/* prefetch */
+#define PIWAR_TGI_LOCAL		0x00f00000	/* target - local memory */
+#define PIWAR_READ_SNOOP	0x00050000
+#define PIWAR_WRITE_SNOOP	0x00005000
 
 /* PCI/PCI Express outbound window reg */
 struct pci_outbound_window_regs {
@@ -84,6 +88,7 @@ struct ccsr_pci {
 extern int fsl_add_bridge(struct device_node *dev, int is_primary);
 extern void fsl_pcibios_fixup_bus(struct pci_bus *bus);
 extern int mpc83xx_add_bridge(struct device_node *dev);
+u64 fsl_pci_immrbar_base(struct pci_controller *hose);
 
 #endif /* __POWERPC_FSL_PCI_H */
 #endif /* __KERNEL__ */

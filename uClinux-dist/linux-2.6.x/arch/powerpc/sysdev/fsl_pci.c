@@ -1,7 +1,7 @@
 /*
  * MPC83xx/85xx/86xx PCI/PCIE support routing.
  *
- * Copyright 2007-2009 Freescale Semiconductor, Inc.
+ * Copyright 2007-2010 Freescale Semiconductor, Inc.
  * Copyright 2008-2009 MontaVista Software, Inc.
  *
  * Initial author: Xianghua Xiao <x.xiao@freescale.com>
@@ -23,6 +23,9 @@
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/bootmem.h>
+#include <linux/memblock.h>
+#include <linux/log2.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -31,7 +34,7 @@
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
 
-static int fsl_pcie_bus_fixup;
+static int fsl_pcie_bus_fixup, is_mpc83xx_pci;
 
 static void __init quirk_fsl_pcie_header(struct pci_dev *dev)
 {
@@ -54,7 +57,7 @@ static int __init fsl_pcie_check_link(struct pci_controller *hose)
 	return 0;
 }
 
-#if defined(CONFIG_PPC_85xx) || defined(CONFIG_PPC_86xx)
+#if defined(CONFIG_FSL_SOC_BOOKE) || defined(CONFIG_PPC_86xx)
 static int __init setup_one_atmu(struct ccsr_pci __iomem *pci,
 	unsigned int index, const struct resource *res,
 	resource_size_t offset)
@@ -96,7 +99,13 @@ static void __init setup_pci_atmu(struct pci_controller *hose,
 				  struct resource *rsrc)
 {
 	struct ccsr_pci __iomem *pci;
-	int i, j, n;
+	int i, j, n, mem_log, win_idx = 2;
+	u64 mem, sz, paddr_hi = 0;
+	u64 paddr_lo = ULLONG_MAX;
+	u32 pcicsrbar = 0, pcicsrbar_sz;
+	u32 piwar = PIWAR_EN | PIWAR_PF | PIWAR_TGI_LOCAL |
+			PIWAR_READ_SNOOP | PIWAR_WRITE_SNOOP;
+	char *name = hose->dn->full_name;
 
 	pr_debug("PCI memory map start 0x%016llx, size 0x%016llx\n",
 		    (u64)rsrc->start, (u64)rsrc->end - (u64)rsrc->start + 1);
@@ -116,6 +125,9 @@ static void __init setup_pci_atmu(struct pci_controller *hose,
 	for(i = 0, j = 1; i < 3; i++) {
 		if (!(hose->mem_resources[i].flags & IORESOURCE_MEM))
 			continue;
+
+		paddr_lo = min(paddr_lo, (u64)hose->mem_resources[i].start);
+		paddr_hi = max(paddr_hi, (u64)hose->mem_resources[i].end);
 
 		n = setup_one_atmu(pci, j, &hose->mem_resources[i],
 				   hose->pci_mem_offset);
@@ -147,10 +159,105 @@ static void __init setup_pci_atmu(struct pci_controller *hose,
 		}
 	}
 
-	/* Setup 2G inbound Memory Window @ 1 */
-	out_be32(&pci->piw[2].pitar, 0x00000000);
-	out_be32(&pci->piw[2].piwbar,0x00000000);
-	out_be32(&pci->piw[2].piwar, PIWAR_2G);
+	/* convert to pci address space */
+	paddr_hi -= hose->pci_mem_offset;
+	paddr_lo -= hose->pci_mem_offset;
+
+	if (paddr_hi == paddr_lo) {
+		pr_err("%s: No outbound window space\n", name);
+		return ;
+	}
+
+	if (paddr_lo == 0) {
+		pr_err("%s: No space for inbound window\n", name);
+		return ;
+	}
+
+	/* setup PCSRBAR/PEXCSRBAR */
+	early_write_config_dword(hose, 0, 0, PCI_BASE_ADDRESS_0, 0xffffffff);
+	early_read_config_dword(hose, 0, 0, PCI_BASE_ADDRESS_0, &pcicsrbar_sz);
+	pcicsrbar_sz = ~pcicsrbar_sz + 1;
+
+	if (paddr_hi < (0x100000000ull - pcicsrbar_sz) ||
+		(paddr_lo > 0x100000000ull))
+		pcicsrbar = 0x100000000ull - pcicsrbar_sz;
+	else
+		pcicsrbar = (paddr_lo - pcicsrbar_sz) & -pcicsrbar_sz;
+	early_write_config_dword(hose, 0, 0, PCI_BASE_ADDRESS_0, pcicsrbar);
+
+	paddr_lo = min(paddr_lo, (u64)pcicsrbar);
+
+	pr_info("%s: PCICSRBAR @ 0x%x\n", name, pcicsrbar);
+
+	/* Setup inbound mem window */
+	mem = memblock_end_of_DRAM();
+	sz = min(mem, paddr_lo);
+	mem_log = __ilog2_u64(sz);
+
+	/* PCIe can overmap inbound & outbound since RX & TX are separated */
+	if (early_find_capability(hose, 0, 0, PCI_CAP_ID_EXP)) {
+		/* Size window to exact size if power-of-two or one size up */
+		if ((1ull << mem_log) != mem) {
+			if ((1ull << mem_log) > mem)
+				pr_info("%s: Setting PCI inbound window "
+					"greater than memory size\n", name);
+			mem_log++;
+		}
+
+		piwar |= (mem_log - 1);
+
+		/* Setup inbound memory window */
+		out_be32(&pci->piw[win_idx].pitar,  0x00000000);
+		out_be32(&pci->piw[win_idx].piwbar, 0x00000000);
+		out_be32(&pci->piw[win_idx].piwar,  piwar);
+		win_idx--;
+
+		hose->dma_window_base_cur = 0x00000000;
+		hose->dma_window_size = (resource_size_t)sz;
+	} else {
+		u64 paddr = 0;
+
+		/* Setup inbound memory window */
+		out_be32(&pci->piw[win_idx].pitar,  paddr >> 12);
+		out_be32(&pci->piw[win_idx].piwbar, paddr >> 12);
+		out_be32(&pci->piw[win_idx].piwar,  (piwar | (mem_log - 1)));
+		win_idx--;
+
+		paddr += 1ull << mem_log;
+		sz -= 1ull << mem_log;
+
+		if (sz) {
+			mem_log = __ilog2_u64(sz);
+			piwar |= (mem_log - 1);
+
+			out_be32(&pci->piw[win_idx].pitar,  paddr >> 12);
+			out_be32(&pci->piw[win_idx].piwbar, paddr >> 12);
+			out_be32(&pci->piw[win_idx].piwar,  piwar);
+			win_idx--;
+
+			paddr += 1ull << mem_log;
+		}
+
+		hose->dma_window_base_cur = 0x00000000;
+		hose->dma_window_size = (resource_size_t)paddr;
+	}
+
+	if (hose->dma_window_size < mem) {
+#ifndef CONFIG_SWIOTLB
+		pr_err("%s: ERROR: Memory size exceeds PCI ATMU ability to "
+			"map - enable CONFIG_SWIOTLB to avoid dma errors.\n",
+			 name);
+#endif
+		/* adjusting outbound windows could reclaim space in mem map */
+		if (paddr_hi < 0xffffffffull)
+			pr_warning("%s: WARNING: Outbound window cfg leaves "
+				"gaps in memory map. Adjusting the memory map "
+				"could reduce unnecessary bounce buffering.\n",
+				name);
+
+		pr_info("%s: DMA window size is 0x%llx\n", name,
+			(u64)hose->dma_window_size);
+	}
 
 	iounmap(pci);
 }
@@ -176,19 +283,9 @@ static void __init setup_pci_cmd(struct pci_controller *hose)
 	}
 }
 
-static void __init setup_pci_pcsrbar(struct pci_controller *hose)
-{
-#ifdef CONFIG_PCI_MSI
-	phys_addr_t immr_base;
-
-	immr_base = get_immrbase();
-	early_write_config_dword(hose, 0, 0, PCI_BASE_ADDRESS_0, immr_base);
-#endif
-}
-
 void fsl_pcibios_fixup_bus(struct pci_bus *bus)
 {
-	struct pci_controller *hose = (struct pci_controller *) bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	int i;
 
 	if ((bus->parent == hose->bus) &&
@@ -269,8 +366,6 @@ int __init fsl_add_bridge(struct device_node *dev, int is_primary)
 	/* Setup PEX window registers */
 	setup_pci_atmu(hose, &rsrc);
 
-	/* Setup PEXCSRBAR */
-	setup_pci_pcsrbar(hose);
 	return 0;
 }
 
@@ -281,6 +376,8 @@ DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8543, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8547E, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8545E, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8545, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8569E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8569, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8568E, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8568, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8567E, quirk_fsl_pcie_header);
@@ -296,9 +393,36 @@ DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8536, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8641, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8641D, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8610, quirk_fsl_pcie_header);
-#endif /* CONFIG_PPC_85xx || CONFIG_PPC_86xx */
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1011E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1011, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1013E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1013, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1020E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1020, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1021E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1021, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1022E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P1022, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P2010E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P2010, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P2020E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P2020, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P2040E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P2040, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P3041E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P3041, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P4040E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P4040, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P4080E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P4080, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P5010E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P5010, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P5020E, quirk_fsl_pcie_header);
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_P5020, quirk_fsl_pcie_header);
+#endif /* CONFIG_FSL_SOC_BOOKE || CONFIG_PPC_86xx */
 
 #if defined(CONFIG_PPC_83xx) || defined(CONFIG_PPC_MPC512x)
+DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8308, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8314E, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8314, quirk_fsl_pcie_header);
 DECLARE_PCI_FIXUP_HEADER(0x1957, PCI_DEVICE_ID_MPC8315E, quirk_fsl_pcie_header);
@@ -314,6 +438,13 @@ struct mpc83xx_pcie_priv {
 	u32 dev_base;
 };
 
+struct pex_inbound_window {
+	u32 ar;
+	u32 tar;
+	u32 barl;
+	u32 barh;
+};
+
 /*
  * With the convention of u-boot, the PCIE outbound window 0 serves
  * as configuration transactions outbound.
@@ -321,10 +452,12 @@ struct mpc83xx_pcie_priv {
 #define PEX_OUTWIN0_BAR		0xCA4
 #define PEX_OUTWIN0_TAL		0xCA8
 #define PEX_OUTWIN0_TAH		0xCAC
+#define PEX_RC_INWIN_BASE	0xE60
+#define PEX_RCIWARn_EN		0x1
 
 static int mpc83xx_pcie_exclude_device(struct pci_bus *bus, unsigned int devfn)
 {
-	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 
 	if (hose->indirect_type & PPC_INDIRECT_TYPE_NO_PCIE_LINK)
 		return PCIBIOS_DEVICE_NOT_FOUND;
@@ -350,10 +483,9 @@ static int mpc83xx_pcie_exclude_device(struct pci_bus *bus, unsigned int devfn)
 static void __iomem *mpc83xx_pcie_remap_cfg(struct pci_bus *bus,
 					    unsigned int devfn, int offset)
 {
-	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	struct mpc83xx_pcie_priv *pcie = hose->dn->data;
-	u8 bus_no = bus->number - hose->first_busno;
-	u32 dev_base = bus_no << 24 | devfn << 16;
+	u32 dev_base = bus->number << 24 | devfn << 16;
 	int ret;
 
 	ret = mpc83xx_pcie_exclude_device(bus, devfn);
@@ -403,11 +535,16 @@ static int mpc83xx_pcie_read_config(struct pci_bus *bus, unsigned int devfn,
 static int mpc83xx_pcie_write_config(struct pci_bus *bus, unsigned int devfn,
 				     int offset, int len, u32 val)
 {
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	void __iomem *cfg_addr;
 
 	cfg_addr = mpc83xx_pcie_remap_cfg(bus, devfn, offset);
 	if (!cfg_addr)
 		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	/* PPC_INDIRECT_TYPE_SURPRESS_PRIMARY_BUS */
+	if (offset == PCI_PRIMARY_BUS && bus->number == hose->first_busno)
+		val &= 0xffffff00;
 
 	switch (len) {
 	case 1:
@@ -483,6 +620,8 @@ int __init mpc83xx_add_bridge(struct device_node *dev)
 	struct resource rsrc_cfg;
 	const int *bus_range;
 	int primary;
+
+	is_mpc83xx_pci = 1;
 
 	if (!of_device_is_available(dev)) {
 		pr_warning("%s: disabled by the firmware.\n",
@@ -563,3 +702,40 @@ err0:
 	return ret;
 }
 #endif /* CONFIG_PPC_83xx */
+
+u64 fsl_pci_immrbar_base(struct pci_controller *hose)
+{
+#ifdef CONFIG_PPC_83xx
+	if (is_mpc83xx_pci) {
+		struct mpc83xx_pcie_priv *pcie = hose->dn->data;
+		struct pex_inbound_window *in;
+		int i;
+
+		/* Walk the Root Complex Inbound windows to match IMMR base */
+		in = pcie->cfg_type0 + PEX_RC_INWIN_BASE;
+		for (i = 0; i < 4; i++) {
+			/* not enabled, skip */
+			if (!in_le32(&in[i].ar) & PEX_RCIWARn_EN)
+				 continue;
+
+			if (get_immrbase() == in_le32(&in[i].tar))
+				return (u64)in_le32(&in[i].barh) << 32 |
+					    in_le32(&in[i].barl);
+		}
+
+		printk(KERN_WARNING "could not find PCI BAR matching IMMR\n");
+	}
+#endif
+
+#if defined(CONFIG_FSL_SOC_BOOKE) || defined(CONFIG_PPC_86xx)
+	if (!is_mpc83xx_pci) {
+		u32 base;
+
+		pci_bus_read_config_dword(hose->bus,
+			PCI_DEVFN(0, 0), PCI_BASE_ADDRESS_0, &base);
+		return base;
+	}
+#endif
+
+	return 0;
+}

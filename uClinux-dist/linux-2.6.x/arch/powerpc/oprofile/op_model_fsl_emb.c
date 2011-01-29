@@ -2,7 +2,7 @@
  * Freescale Embedded oprofile support, based on ppc64 oprofile support
  * Copyright (C) 2004 Anton Blanchard <anton@au.ibm.com>, IBM
  *
- * Copyright (c) 2004 Freescale Semiconductor, Inc
+ * Copyright (c) 2004, 2010 Freescale Semiconductor, Inc
  *
  * Author: Andy Fleming
  * Maintainer: Kumar Gala <galak@kernel.crashing.org>
@@ -228,20 +228,6 @@ static void pmc_stop_ctrs(void)
 	mtpmr(PMRN_PMGC0, pmgc0);
 }
 
-static void dump_pmcs(void)
-{
-	printk("pmgc0: %x\n", mfpmr(PMRN_PMGC0));
-	printk("pmc\t\tpmlca\t\tpmlcb\n");
-	printk("%8x\t%8x\t%8x\n", mfpmr(PMRN_PMC0),
-			mfpmr(PMRN_PMLCA0), mfpmr(PMRN_PMLCB0));
-	printk("%8x\t%8x\t%8x\n", mfpmr(PMRN_PMC1),
-			mfpmr(PMRN_PMLCA1), mfpmr(PMRN_PMLCB1));
-	printk("%8x\t%8x\t%8x\n", mfpmr(PMRN_PMC2),
-			mfpmr(PMRN_PMLCA2), mfpmr(PMRN_PMLCB2));
-	printk("%8x\t%8x\t%8x\n", mfpmr(PMRN_PMC3),
-			mfpmr(PMRN_PMLCA3), mfpmr(PMRN_PMLCB3));
-}
-
 static int fsl_emb_cpu_setup(struct op_counter_config *ctr)
 {
 	int i;
@@ -335,9 +321,6 @@ static void fsl_emb_handle_interrupt(struct pt_regs *regs,
 	int val;
 	int i;
 
-	/* set the PMM bit (see comment below) */
-	mtmsr(mfmsr() | MSR_PMM);
-
 	pc = regs->nip;
 	is_kernel = is_kernel_addr(pc);
 
@@ -354,9 +337,13 @@ static void fsl_emb_handle_interrupt(struct pt_regs *regs,
 	}
 
 	/* The freeze bit was set by the interrupt. */
-	/* Clear the freeze bit, and reenable the interrupt.
-	 * The counters won't actually start until the rfi clears
-	 * the PMM bit */
+	/* Clear the freeze bit, and reenable the interrupt.  The
+	 * counters won't actually start until the rfi clears the PMM
+	 * bit.  The PMM bit should not be set until after the interrupt
+	 * is cleared to avoid it getting lost in some hypervisor
+	 * environments.
+	 */
+	mtmsr(mfmsr() | MSR_PMM);
 	pmc_start_ctrs(1);
 }
 

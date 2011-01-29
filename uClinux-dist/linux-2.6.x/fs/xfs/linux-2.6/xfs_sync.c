@@ -24,272 +24,275 @@
 #include "xfs_trans.h"
 #include "xfs_sb.h"
 #include "xfs_ag.h"
-#include "xfs_dir2.h"
-#include "xfs_dmapi.h"
 #include "xfs_mount.h"
 #include "xfs_bmap_btree.h"
-#include "xfs_alloc_btree.h"
-#include "xfs_ialloc_btree.h"
-#include "xfs_btree.h"
-#include "xfs_dir2_sf.h"
-#include "xfs_attr_sf.h"
 #include "xfs_inode.h"
 #include "xfs_dinode.h"
 #include "xfs_error.h"
-#include "xfs_mru_cache.h"
 #include "xfs_filestream.h"
 #include "xfs_vnodeops.h"
-#include "xfs_utils.h"
-#include "xfs_buf_item.h"
 #include "xfs_inode_item.h"
-#include "xfs_rw.h"
+#include "xfs_quota.h"
+#include "xfs_trace.h"
+#include "xfs_fsops.h"
 
 #include <linux/kthread.h>
 #include <linux/freezer.h>
 
 /*
- * Sync all the inodes in the given AG according to the
- * direction given by the flags.
+ * The inode lookup is done in batches to keep the amount of lock traffic and
+ * radix tree lookups to a minimum. The batch size is a trade off between
+ * lookup reduction and stack usage. This is in the reclaim path, so we can't
+ * be too greedy.
  */
+#define XFS_LOOKUP_BATCH	32
+
 STATIC int
-xfs_sync_inodes_ag(
-	xfs_mount_t	*mp,
-	int		ag,
-	int		flags)
+xfs_inode_ag_walk_grab(
+	struct xfs_inode	*ip)
 {
-	xfs_perag_t	*pag = &mp->m_perag[ag];
-	int		nr_found;
-	uint32_t	first_index = 0;
-	int		error = 0;
-	int		last_error = 0;
+	struct inode		*inode = VFS_I(ip);
 
+	/* nothing to sync during shutdown */
+	if (XFS_FORCED_SHUTDOWN(ip->i_mount))
+		return EFSCORRUPTED;
+
+	/* avoid new or reclaimable inodes. Leave for reclaim code to flush */
+	if (xfs_iflags_test(ip, XFS_INEW | XFS_IRECLAIMABLE | XFS_IRECLAIM))
+		return ENOENT;
+
+	/* If we can't grab the inode, it must on it's way to reclaim. */
+	if (!igrab(inode))
+		return ENOENT;
+
+	if (is_bad_inode(inode)) {
+		IRELE(ip);
+		return ENOENT;
+	}
+
+	/* inode is valid */
+	return 0;
+}
+
+STATIC int
+xfs_inode_ag_walk(
+	struct xfs_mount	*mp,
+	struct xfs_perag	*pag,
+	int			(*execute)(struct xfs_inode *ip,
+					   struct xfs_perag *pag, int flags),
+	int			flags)
+{
+	uint32_t		first_index;
+	int			last_error = 0;
+	int			skipped;
+	int			done;
+	int			nr_found;
+
+restart:
+	done = 0;
+	skipped = 0;
+	first_index = 0;
+	nr_found = 0;
 	do {
-		struct inode	*inode;
-		xfs_inode_t	*ip = NULL;
-		int		lock_flags = XFS_ILOCK_SHARED;
+		struct xfs_inode *batch[XFS_LOOKUP_BATCH];
+		int		error = 0;
+		int		i;
 
-		/*
-		 * use a gang lookup to find the next inode in the tree
-		 * as the tree is sparse and a gang lookup walks to find
-		 * the number of objects requested.
-		 */
 		read_lock(&pag->pag_ici_lock);
 		nr_found = radix_tree_gang_lookup(&pag->pag_ici_root,
-				(void**)&ip, first_index, 1);
-
+					(void **)batch, first_index,
+					XFS_LOOKUP_BATCH);
 		if (!nr_found) {
 			read_unlock(&pag->pag_ici_lock);
 			break;
 		}
 
 		/*
-		 * Update the index for the next lookup. Catch overflows
-		 * into the next AG range which can occur if we have inodes
-		 * in the last block of the AG and we are currently
-		 * pointing to the last inode.
+		 * Grab the inodes before we drop the lock. if we found
+		 * nothing, nr == 0 and the loop will be skipped.
 		 */
-		first_index = XFS_INO_TO_AGINO(mp, ip->i_ino + 1);
-		if (first_index < XFS_INO_TO_AGINO(mp, ip->i_ino)) {
-			read_unlock(&pag->pag_ici_lock);
-			break;
+		for (i = 0; i < nr_found; i++) {
+			struct xfs_inode *ip = batch[i];
+
+			if (done || xfs_inode_ag_walk_grab(ip))
+				batch[i] = NULL;
+
+			/*
+			 * Update the index for the next lookup. Catch overflows
+			 * into the next AG range which can occur if we have inodes
+			 * in the last block of the AG and we are currently
+			 * pointing to the last inode.
+			 */
+			first_index = XFS_INO_TO_AGINO(mp, ip->i_ino + 1);
+			if (first_index < XFS_INO_TO_AGINO(mp, ip->i_ino))
+				done = 1;
 		}
 
-		/* nothing to sync during shutdown */
-		if (XFS_FORCED_SHUTDOWN(mp)) {
-			read_unlock(&pag->pag_ici_lock);
-			return 0;
-		}
-
-		/*
-		 * If we can't get a reference on the inode, it must be
-		 * in reclaim. Leave it for the reclaim code to flush.
-		 */
-		inode = VFS_I(ip);
-		if (!igrab(inode)) {
-			read_unlock(&pag->pag_ici_lock);
-			continue;
-		}
+		/* unlock now we've grabbed the inodes. */
 		read_unlock(&pag->pag_ici_lock);
 
-		/* avoid new or bad inodes */
-		if (is_bad_inode(inode) ||
-		    xfs_iflags_test(ip, XFS_INEW)) {
-			IRELE(ip);
-			continue;
-		}
-
-		/*
-		 * If we have to flush data or wait for I/O completion
-		 * we need to hold the iolock.
-		 */
-		if (flags & SYNC_DELWRI) {
-			if (VN_DIRTY(inode)) {
-				if (flags & SYNC_TRYLOCK) {
-					if (xfs_ilock_nowait(ip, XFS_IOLOCK_SHARED))
-						lock_flags |= XFS_IOLOCK_SHARED;
-				} else {
-					xfs_ilock(ip, XFS_IOLOCK_SHARED);
-					lock_flags |= XFS_IOLOCK_SHARED;
-				}
-				if (lock_flags & XFS_IOLOCK_SHARED) {
-					error = xfs_flush_pages(ip, 0, -1,
-							(flags & SYNC_WAIT) ? 0
-								: XFS_B_ASYNC,
-							FI_NONE);
-				}
+		for (i = 0; i < nr_found; i++) {
+			if (!batch[i])
+				continue;
+			error = execute(batch[i], pag, flags);
+			IRELE(batch[i]);
+			if (error == EAGAIN) {
+				skipped++;
+				continue;
 			}
-			if (VN_CACHED(inode) && (flags & SYNC_IOWAIT))
-				xfs_ioend_wait(ip);
+			if (error && last_error != EFSCORRUPTED)
+				last_error = error;
 		}
-		xfs_ilock(ip, XFS_ILOCK_SHARED);
 
-		if ((flags & SYNC_ATTR) && !xfs_inode_clean(ip)) {
-			if (flags & SYNC_WAIT) {
-				xfs_iflock(ip);
-				if (!xfs_inode_clean(ip))
-					error = xfs_iflush(ip, XFS_IFLUSH_SYNC);
-				else
-					xfs_ifunlock(ip);
-			} else if (xfs_iflock_nowait(ip)) {
-				if (!xfs_inode_clean(ip))
-					error = xfs_iflush(ip, XFS_IFLUSH_DELWRI);
-				else
-					xfs_ifunlock(ip);
-			}
-		}
-		xfs_iput(ip, lock_flags);
-
-		if (error)
-			last_error = error;
-		/*
-		 * bail out if the filesystem is corrupted.
-		 */
+		/* bail out if the filesystem is corrupted.  */
 		if (error == EFSCORRUPTED)
-			return XFS_ERROR(error);
+			break;
 
-	} while (nr_found);
+	} while (nr_found && !done);
 
+	if (skipped) {
+		delay(1);
+		goto restart;
+	}
 	return last_error;
 }
 
 int
-xfs_sync_inodes(
-	xfs_mount_t	*mp,
-	int		flags)
+xfs_inode_ag_iterator(
+	struct xfs_mount	*mp,
+	int			(*execute)(struct xfs_inode *ip,
+					   struct xfs_perag *pag, int flags),
+	int			flags)
 {
-	int		error;
-	int		last_error;
-	int		i;
-	int		lflags = XFS_LOG_FORCE;
+	struct xfs_perag	*pag;
+	int			error = 0;
+	int			last_error = 0;
+	xfs_agnumber_t		ag;
 
-	if (mp->m_flags & XFS_MOUNT_RDONLY)
-		return 0;
-	error = 0;
-	last_error = 0;
-
-	if (flags & SYNC_WAIT)
-		lflags |= XFS_LOG_SYNC;
-
-	for (i = 0; i < mp->m_sb.sb_agcount; i++) {
-		if (!mp->m_perag[i].pag_ici_init)
-			continue;
-		error = xfs_sync_inodes_ag(mp, i, flags);
-		if (error)
+	ag = 0;
+	while ((pag = xfs_perag_get(mp, ag))) {
+		ag = pag->pag_agno + 1;
+		error = xfs_inode_ag_walk(mp, pag, execute, flags);
+		xfs_perag_put(pag);
+		if (error) {
 			last_error = error;
-		if (error == EFSCORRUPTED)
-			break;
+			if (error == EFSCORRUPTED)
+				break;
+		}
 	}
-	if (flags & SYNC_DELWRI)
-		xfs_log_force(mp, 0, lflags);
-
 	return XFS_ERROR(last_error);
 }
 
 STATIC int
-xfs_commit_dummy_trans(
-	struct xfs_mount	*mp,
-	uint			log_flags)
+xfs_sync_inode_data(
+	struct xfs_inode	*ip,
+	struct xfs_perag	*pag,
+	int			flags)
 {
-	struct xfs_inode	*ip = mp->m_rootip;
-	struct xfs_trans	*tp;
-	int			error;
+	struct inode		*inode = VFS_I(ip);
+	struct address_space *mapping = inode->i_mapping;
+	int			error = 0;
 
-	/*
-	 * Put a dummy transaction in the log to tell recovery
-	 * that all others are OK.
-	 */
-	tp = xfs_trans_alloc(mp, XFS_TRANS_DUMMY1);
-	error = xfs_trans_reserve(tp, 0, XFS_ICHANGE_LOG_RES(mp), 0, 0, 0);
-	if (error) {
-		xfs_trans_cancel(tp, 0);
-		return error;
+	if (!mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
+		goto out_wait;
+
+	if (!xfs_ilock_nowait(ip, XFS_IOLOCK_SHARED)) {
+		if (flags & SYNC_TRYLOCK)
+			goto out_wait;
+		xfs_ilock(ip, XFS_IOLOCK_SHARED);
 	}
 
-	xfs_ilock(ip, XFS_ILOCK_EXCL);
+	error = xfs_flush_pages(ip, 0, -1, (flags & SYNC_WAIT) ?
+				0 : XBF_ASYNC, FI_NONE);
+	xfs_iunlock(ip, XFS_IOLOCK_SHARED);
 
-	xfs_trans_ijoin(tp, ip, XFS_ILOCK_EXCL);
-	xfs_trans_ihold(tp, ip);
-	xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
-	/* XXX(hch): ignoring the error here.. */
-	error = xfs_trans_commit(tp, 0);
-
-	xfs_iunlock(ip, XFS_ILOCK_EXCL);
-
-	xfs_log_force(mp, 0, log_flags);
-	return 0;
+ out_wait:
+	if (flags & SYNC_WAIT)
+		xfs_ioend_wait(ip);
+	return error;
 }
 
-int
-xfs_sync_fsdata(
+STATIC int
+xfs_sync_inode_attr(
+	struct xfs_inode	*ip,
+	struct xfs_perag	*pag,
+	int			flags)
+{
+	int			error = 0;
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	if (xfs_inode_clean(ip))
+		goto out_unlock;
+	if (!xfs_iflock_nowait(ip)) {
+		if (!(flags & SYNC_WAIT))
+			goto out_unlock;
+		xfs_iflock(ip);
+	}
+
+	if (xfs_inode_clean(ip)) {
+		xfs_ifunlock(ip);
+		goto out_unlock;
+	}
+
+	error = xfs_iflush(ip, flags);
+
+ out_unlock:
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+	return error;
+}
+
+/*
+ * Write out pagecache data for the whole filesystem.
+ */
+STATIC int
+xfs_sync_data(
 	struct xfs_mount	*mp,
 	int			flags)
 {
+	int			error;
+
+	ASSERT((flags & ~(SYNC_TRYLOCK|SYNC_WAIT)) == 0);
+
+	error = xfs_inode_ag_iterator(mp, xfs_sync_inode_data, flags);
+	if (error)
+		return XFS_ERROR(error);
+
+	xfs_log_force(mp, (flags & SYNC_WAIT) ? XFS_LOG_SYNC : 0);
+	return 0;
+}
+
+/*
+ * Write out inode metadata (attributes) for the whole filesystem.
+ */
+STATIC int
+xfs_sync_attr(
+	struct xfs_mount	*mp,
+	int			flags)
+{
+	ASSERT((flags & ~SYNC_WAIT) == 0);
+
+	return xfs_inode_ag_iterator(mp, xfs_sync_inode_attr, flags);
+}
+
+STATIC int
+xfs_sync_fsdata(
+	struct xfs_mount	*mp)
+{
 	struct xfs_buf		*bp;
-	struct xfs_buf_log_item	*bip;
-	int			error = 0;
 
 	/*
-	 * If this is xfssyncd() then only sync the superblock if we can
-	 * lock it without sleeping and it is not pinned.
+	 * If the buffer is pinned then push on the log so we won't get stuck
+	 * waiting in the write for someone, maybe ourselves, to flush the log.
+	 *
+	 * Even though we just pushed the log above, we did not have the
+	 * superblock buffer locked at that point so it can become pinned in
+	 * between there and here.
 	 */
-	if (flags & SYNC_BDFLUSH) {
-		ASSERT(!(flags & SYNC_WAIT));
-
-		bp = xfs_getsb(mp, XFS_BUF_TRYLOCK);
-		if (!bp)
-			goto out;
-
-		bip = XFS_BUF_FSPRIVATE(bp, struct xfs_buf_log_item *);
-		if (!bip || !xfs_buf_item_dirty(bip) || XFS_BUF_ISPINNED(bp))
-			goto out_brelse;
-	} else {
-		bp = xfs_getsb(mp, 0);
-
-		/*
-		 * If the buffer is pinned then push on the log so we won't
-		 * get stuck waiting in the write for someone, maybe
-		 * ourselves, to flush the log.
-		 *
-		 * Even though we just pushed the log above, we did not have
-		 * the superblock buffer locked at that point so it can
-		 * become pinned in between there and here.
-		 */
-		if (XFS_BUF_ISPINNED(bp))
-			xfs_log_force(mp, 0, XFS_LOG_FORCE);
-	}
-
-
-	if (flags & SYNC_WAIT)
-		XFS_BUF_UNASYNC(bp);
-	else
-		XFS_BUF_ASYNC(bp);
+	bp = xfs_getsb(mp, 0);
+	if (XFS_BUF_ISPINNED(bp))
+		xfs_log_force(mp, 0);
 
 	return xfs_bwrite(mp, bp);
-
- out_brelse:
-	xfs_buf_relse(bp);
- out:
-	return error;
 }
 
 /*
@@ -313,25 +316,31 @@ int
 xfs_quiesce_data(
 	struct xfs_mount	*mp)
 {
-	int error;
+	int			error, error2 = 0;
 
 	/* push non-blocking */
-	xfs_sync_inodes(mp, SYNC_DELWRI|SYNC_BDFLUSH);
-	XFS_QM_DQSYNC(mp, SYNC_BDFLUSH);
-	xfs_filestream_flush(mp);
+	xfs_sync_data(mp, 0);
+	xfs_qm_sync(mp, SYNC_TRYLOCK);
 
-	/* push and block */
-	xfs_sync_inodes(mp, SYNC_DELWRI|SYNC_WAIT|SYNC_IOWAIT);
-	XFS_QM_DQSYNC(mp, SYNC_WAIT);
+	/* push and block till complete */
+	xfs_sync_data(mp, SYNC_WAIT);
+	xfs_qm_sync(mp, SYNC_WAIT);
 
 	/* write superblock and hoover up shutdown errors */
-	error = xfs_sync_fsdata(mp, 0);
+	error = xfs_sync_fsdata(mp);
+
+	/* make sure all delwri buffers are written out */
+	xfs_flush_buftarg(mp->m_ddev_targp, 1);
+
+	/* mark the log as covered if needed */
+	if (xfs_log_need_covered(mp))
+		error2 = xfs_fs_log_dummy(mp, SYNC_WAIT);
 
 	/* flush data-only devices */
 	if (mp->m_rtdev_targp)
 		XFS_bflush(mp->m_rtdev_targp);
 
-	return error;
+	return error ? error : error2;
 }
 
 STATIC void
@@ -340,17 +349,19 @@ xfs_quiesce_fs(
 {
 	int	count = 0, pincount;
 
+	xfs_reclaim_inodes(mp, 0);
 	xfs_flush_buftarg(mp->m_ddev_targp, 0);
-	xfs_reclaim_inodes(mp, 0, XFS_IFLUSH_DELWRI_ELSE_ASYNC);
 
 	/*
 	 * This loop must run at least twice.  The first instance of the loop
 	 * will flush most meta data but that will generate more meta data
 	 * (typically directory updates).  Which then must be flushed and
-	 * logged before we can write the unmount record.
+	 * logged before we can write the unmount record. We also so sync
+	 * reclaim of inodes to catch any that the above delwri flush skipped.
 	 */
 	do {
-		xfs_sync_inodes(mp, SYNC_ATTR|SYNC_WAIT);
+		xfs_reclaim_inodes(mp, SYNC_WAIT);
+		xfs_sync_attr(mp, SYNC_WAIT);
 		pincount = xfs_flush_buftarg(mp->m_ddev_targp, 1);
 		if (!pincount) {
 			delay(50);
@@ -433,8 +444,8 @@ xfs_flush_inodes_work(
 	void		*arg)
 {
 	struct inode	*inode = arg;
-	xfs_sync_inodes(mp, SYNC_DELWRI | SYNC_TRYLOCK);
-	xfs_sync_inodes(mp, SYNC_DELWRI | SYNC_TRYLOCK | SYNC_IOWAIT);
+	xfs_sync_data(mp, SYNC_TRYLOCK);
+	xfs_sync_data(mp, SYNC_TRYLOCK | SYNC_WAIT);
 	iput(inode);
 }
 
@@ -448,13 +459,13 @@ xfs_flush_inodes(
 	igrab(inode);
 	xfs_syncd_queue_work(ip->i_mount, inode, xfs_flush_inodes_work, &completion);
 	wait_for_completion(&completion);
-	xfs_log_force(ip->i_mount, (xfs_lsn_t)0, XFS_LOG_FORCE|XFS_LOG_SYNC);
+	xfs_log_force(ip->i_mount, XFS_LOG_SYNC);
 }
 
 /*
- * Every sync period we need to unpin all items, reclaim inodes, sync
- * quota and write out the superblock. We might need to cover the log
- * to indicate it is idle.
+ * Every sync period we need to unpin all items, reclaim inodes and sync
+ * disk quotas.  We might need to cover the log to indicate that the
+ * filesystem is idle and not frozen.
  */
 STATIC void
 xfs_sync_worker(
@@ -464,13 +475,13 @@ xfs_sync_worker(
 	int		error;
 
 	if (!(mp->m_flags & XFS_MOUNT_RDONLY)) {
-		xfs_log_force(mp, (xfs_lsn_t)0, XFS_LOG_FORCE);
-		xfs_reclaim_inodes(mp, 0, XFS_IFLUSH_DELWRI_ELSE_ASYNC);
+		xfs_log_force(mp, 0);
+		xfs_reclaim_inodes(mp, 0);
 		/* dgc: errors ignored here */
-		error = XFS_QM_DQSYNC(mp, SYNC_BDFLUSH);
-		error = xfs_sync_fsdata(mp, SYNC_BDFLUSH);
-		if (xfs_log_need_covered(mp))
-			error = xfs_commit_dummy_trans(mp, XFS_LOG_FORCE);
+		error = xfs_qm_sync(mp, SYNC_TRYLOCK);
+		if (mp->m_super->s_frozen == SB_UNFROZEN &&
+		    xfs_log_need_covered(mp))
+			error = xfs_fs_log_dummy(mp, 0);
 	}
 	mp->m_sync_seq++;
 	wake_up(&mp->m_wait_single_sync_task);
@@ -488,7 +499,8 @@ xfssyncd(
 	set_freezable();
 	timeleft = xfs_syncd_centisecs * msecs_to_jiffies(10);
 	for (;;) {
-		timeleft = schedule_timeout_interruptible(timeleft);
+		if (list_empty(&mp->m_sync_list))
+			timeleft = schedule_timeout_interruptible(timeleft);
 		/* swsusp */
 		try_to_freeze();
 		if (kthread_should_stop() && list_empty(&mp->m_sync_list))
@@ -508,8 +520,7 @@ xfssyncd(
 			list_add_tail(&mp->m_sync_work.w_list,
 					&mp->m_sync_list);
 		}
-		list_for_each_entry_safe(work, n, &mp->m_sync_list, w_list)
-			list_move(&work->w_list, &tmp);
+		list_splice_init(&mp->m_sync_list, &tmp);
 		spin_unlock(&mp->m_sync_lock);
 
 		list_for_each_entry_safe(work, n, &tmp, w_list) {
@@ -533,7 +544,7 @@ xfs_syncd_init(
 	mp->m_sync_work.w_syncer = xfs_sync_worker;
 	mp->m_sync_work.w_mount = mp;
 	mp->m_sync_work.w_completion = NULL;
-	mp->m_sync_task = kthread_run(xfssyncd, mp, "xfssyncd");
+	mp->m_sync_task = kthread_run(xfssyncd, mp, "xfssyncd/%s", mp->m_fsname);
 	if (IS_ERR(mp->m_sync_task))
 		return -PTR_ERR(mp->m_sync_task);
 	return 0;
@@ -546,65 +557,26 @@ xfs_syncd_stop(
 	kthread_stop(mp->m_sync_task);
 }
 
-int
-xfs_reclaim_inode(
-	xfs_inode_t	*ip,
-	int		locked,
-	int		sync_mode)
+void
+__xfs_inode_set_reclaim_tag(
+	struct xfs_perag	*pag,
+	struct xfs_inode	*ip)
 {
-	xfs_perag_t	*pag = xfs_get_perag(ip->i_mount, ip->i_ino);
+	radix_tree_tag_set(&pag->pag_ici_root,
+			   XFS_INO_TO_AGINO(ip->i_mount, ip->i_ino),
+			   XFS_ICI_RECLAIM_TAG);
 
-	/* The hash lock here protects a thread in xfs_iget_core from
-	 * racing with us on linking the inode back with a vnode.
-	 * Once we have the XFS_IRECLAIM flag set it will not touch
-	 * us.
-	 */
-	write_lock(&pag->pag_ici_lock);
-	spin_lock(&ip->i_flags_lock);
-	if (__xfs_iflags_test(ip, XFS_IRECLAIM) ||
-	    !__xfs_iflags_test(ip, XFS_IRECLAIMABLE)) {
-		spin_unlock(&ip->i_flags_lock);
-		write_unlock(&pag->pag_ici_lock);
-		if (locked) {
-			xfs_ifunlock(ip);
-			xfs_iunlock(ip, XFS_ILOCK_EXCL);
-		}
-		return 1;
+	if (!pag->pag_ici_reclaimable) {
+		/* propagate the reclaim tag up into the perag radix tree */
+		spin_lock(&ip->i_mount->m_perag_lock);
+		radix_tree_tag_set(&ip->i_mount->m_perag_tree,
+				XFS_INO_TO_AGNO(ip->i_mount, ip->i_ino),
+				XFS_ICI_RECLAIM_TAG);
+		spin_unlock(&ip->i_mount->m_perag_lock);
+		trace_xfs_perag_set_reclaim(ip->i_mount, pag->pag_agno,
+							-1, _RET_IP_);
 	}
-	__xfs_iflags_set(ip, XFS_IRECLAIM);
-	spin_unlock(&ip->i_flags_lock);
-	write_unlock(&pag->pag_ici_lock);
-	xfs_put_perag(ip->i_mount, pag);
-
-	/*
-	 * If the inode is still dirty, then flush it out.  If the inode
-	 * is not in the AIL, then it will be OK to flush it delwri as
-	 * long as xfs_iflush() does not keep any references to the inode.
-	 * We leave that decision up to xfs_iflush() since it has the
-	 * knowledge of whether it's OK to simply do a delwri flush of
-	 * the inode or whether we need to wait until the inode is
-	 * pulled from the AIL.
-	 * We get the flush lock regardless, though, just to make sure
-	 * we don't free it while it is being flushed.
-	 */
-	if (!locked) {
-		xfs_ilock(ip, XFS_ILOCK_EXCL);
-		xfs_iflock(ip);
-	}
-
-	/*
-	 * In the case of a forced shutdown we rely on xfs_iflush() to
-	 * wait for the inode to be unpinned before returning an error.
-	 */
-	if (!is_bad_inode(VFS_I(ip)) && xfs_iflush(ip, sync_mode) == 0) {
-		/* synchronize with xfs_iflush_done */
-		xfs_iflock(ip);
-		xfs_ifunlock(ip);
-	}
-
-	xfs_iunlock(ip, XFS_ILOCK_EXCL);
-	xfs_ireclaim(ip);
-	return 0;
+	pag->pag_ici_reclaimable++;
 }
 
 /*
@@ -616,17 +588,35 @@ void
 xfs_inode_set_reclaim_tag(
 	xfs_inode_t	*ip)
 {
-	xfs_mount_t	*mp = ip->i_mount;
-	xfs_perag_t	*pag = xfs_get_perag(mp, ip->i_ino);
+	struct xfs_mount *mp = ip->i_mount;
+	struct xfs_perag *pag;
 
-	read_lock(&pag->pag_ici_lock);
+	pag = xfs_perag_get(mp, XFS_INO_TO_AGNO(mp, ip->i_ino));
+	write_lock(&pag->pag_ici_lock);
 	spin_lock(&ip->i_flags_lock);
-	radix_tree_tag_set(&pag->pag_ici_root,
-			XFS_INO_TO_AGINO(mp, ip->i_ino), XFS_ICI_RECLAIM_TAG);
+	__xfs_inode_set_reclaim_tag(pag, ip);
 	__xfs_iflags_set(ip, XFS_IRECLAIMABLE);
 	spin_unlock(&ip->i_flags_lock);
-	read_unlock(&pag->pag_ici_lock);
-	xfs_put_perag(mp, pag);
+	write_unlock(&pag->pag_ici_lock);
+	xfs_perag_put(pag);
+}
+
+STATIC void
+__xfs_inode_clear_reclaim(
+	xfs_perag_t	*pag,
+	xfs_inode_t	*ip)
+{
+	pag->pag_ici_reclaimable--;
+	if (!pag->pag_ici_reclaimable) {
+		/* clear the reclaim tag from the perag radix tree */
+		spin_lock(&ip->i_mount->m_perag_lock);
+		radix_tree_tag_clear(&ip->i_mount->m_perag_tree,
+				XFS_INO_TO_AGNO(ip->i_mount, ip->i_ino),
+				XFS_ICI_RECLAIM_TAG);
+		spin_unlock(&ip->i_mount->m_perag_lock);
+		trace_xfs_perag_clear_reclaim(ip->i_mount, pag->pag_agno,
+							-1, _RET_IP_);
+	}
 }
 
 void
@@ -637,118 +627,370 @@ __xfs_inode_clear_reclaim_tag(
 {
 	radix_tree_tag_clear(&pag->pag_ici_root,
 			XFS_INO_TO_AGINO(mp, ip->i_ino), XFS_ICI_RECLAIM_TAG);
+	__xfs_inode_clear_reclaim(pag, ip);
 }
 
-void
-xfs_inode_clear_reclaim_tag(
-	xfs_inode_t	*ip)
+/*
+ * Grab the inode for reclaim exclusively.
+ * Return 0 if we grabbed it, non-zero otherwise.
+ */
+STATIC int
+xfs_reclaim_inode_grab(
+	struct xfs_inode	*ip,
+	int			flags)
 {
-	xfs_mount_t	*mp = ip->i_mount;
-	xfs_perag_t	*pag = xfs_get_perag(mp, ip->i_ino);
 
-	read_lock(&pag->pag_ici_lock);
+	/*
+	 * do some unlocked checks first to avoid unnecceary lock traffic.
+	 * The first is a flush lock check, the second is a already in reclaim
+	 * check. Only do these checks if we are not going to block on locks.
+	 */
+	if ((flags & SYNC_TRYLOCK) &&
+	    (!ip->i_flush.done || __xfs_iflags_test(ip, XFS_IRECLAIM))) {
+		return 1;
+	}
+
+	/*
+	 * The radix tree lock here protects a thread in xfs_iget from racing
+	 * with us starting reclaim on the inode.  Once we have the
+	 * XFS_IRECLAIM flag set it will not touch us.
+	 */
 	spin_lock(&ip->i_flags_lock);
-	__xfs_inode_clear_reclaim_tag(mp, pag, ip);
+	ASSERT_ALWAYS(__xfs_iflags_test(ip, XFS_IRECLAIMABLE));
+	if (__xfs_iflags_test(ip, XFS_IRECLAIM)) {
+		/* ignore as it is already under reclaim */
+		spin_unlock(&ip->i_flags_lock);
+		return 1;
+	}
+	__xfs_iflags_set(ip, XFS_IRECLAIM);
 	spin_unlock(&ip->i_flags_lock);
-	read_unlock(&pag->pag_ici_lock);
-	xfs_put_perag(mp, pag);
+	return 0;
 }
 
-
-STATIC void
-xfs_reclaim_inodes_ag(
-	xfs_mount_t	*mp,
-	int		ag,
-	int		noblock,
-	int		mode)
+/*
+ * Inodes in different states need to be treated differently, and the return
+ * value of xfs_iflush is not sufficient to get this right. The following table
+ * lists the inode states and the reclaim actions necessary for non-blocking
+ * reclaim:
+ *
+ *
+ *	inode state	     iflush ret		required action
+ *      ---------------      ----------         ---------------
+ *	bad			-		reclaim
+ *	shutdown		EIO		unpin and reclaim
+ *	clean, unpinned		0		reclaim
+ *	stale, unpinned		0		reclaim
+ *	clean, pinned(*)	0		requeue
+ *	stale, pinned		EAGAIN		requeue
+ *	dirty, delwri ok	0		requeue
+ *	dirty, delwri blocked	EAGAIN		requeue
+ *	dirty, sync flush	0		reclaim
+ *
+ * (*) dgc: I don't think the clean, pinned state is possible but it gets
+ * handled anyway given the order of checks implemented.
+ *
+ * As can be seen from the table, the return value of xfs_iflush() is not
+ * sufficient to correctly decide the reclaim action here. The checks in
+ * xfs_iflush() might look like duplicates, but they are not.
+ *
+ * Also, because we get the flush lock first, we know that any inode that has
+ * been flushed delwri has had the flush completed by the time we check that
+ * the inode is clean. The clean inode check needs to be done before flushing
+ * the inode delwri otherwise we would loop forever requeuing clean inodes as
+ * we cannot tell apart a successful delwri flush and a clean inode from the
+ * return value of xfs_iflush().
+ *
+ * Note that because the inode is flushed delayed write by background
+ * writeback, the flush lock may already be held here and waiting on it can
+ * result in very long latencies. Hence for sync reclaims, where we wait on the
+ * flush lock, the caller should push out delayed write inodes first before
+ * trying to reclaim them to minimise the amount of time spent waiting. For
+ * background relaim, we just requeue the inode for the next pass.
+ *
+ * Hence the order of actions after gaining the locks should be:
+ *	bad		=> reclaim
+ *	shutdown	=> unpin and reclaim
+ *	pinned, delwri	=> requeue
+ *	pinned, sync	=> unpin
+ *	stale		=> reclaim
+ *	clean		=> reclaim
+ *	dirty, delwri	=> flush and requeue
+ *	dirty, sync	=> flush, wait and reclaim
+ */
+STATIC int
+xfs_reclaim_inode(
+	struct xfs_inode	*ip,
+	struct xfs_perag	*pag,
+	int			sync_mode)
 {
-	xfs_inode_t	*ip = NULL;
-	xfs_perag_t	*pag = &mp->m_perag[ag];
-	int		nr_found;
-	uint32_t	first_index;
-	int		skipped;
+	int	error = 0;
+
+	xfs_ilock(ip, XFS_ILOCK_EXCL);
+	if (!xfs_iflock_nowait(ip)) {
+		if (!(sync_mode & SYNC_WAIT))
+			goto out;
+		xfs_iflock(ip);
+	}
+
+	if (is_bad_inode(VFS_I(ip)))
+		goto reclaim;
+	if (XFS_FORCED_SHUTDOWN(ip->i_mount)) {
+		xfs_iunpin_wait(ip);
+		goto reclaim;
+	}
+	if (xfs_ipincount(ip)) {
+		if (!(sync_mode & SYNC_WAIT)) {
+			xfs_ifunlock(ip);
+			goto out;
+		}
+		xfs_iunpin_wait(ip);
+	}
+	if (xfs_iflags_test(ip, XFS_ISTALE))
+		goto reclaim;
+	if (xfs_inode_clean(ip))
+		goto reclaim;
+
+	/* Now we have an inode that needs flushing */
+	error = xfs_iflush(ip, sync_mode);
+	if (sync_mode & SYNC_WAIT) {
+		xfs_iflock(ip);
+		goto reclaim;
+	}
+
+	/*
+	 * When we have to flush an inode but don't have SYNC_WAIT set, we
+	 * flush the inode out using a delwri buffer and wait for the next
+	 * call into reclaim to find it in a clean state instead of waiting for
+	 * it now. We also don't return errors here - if the error is transient
+	 * then the next reclaim pass will flush the inode, and if the error
+	 * is permanent then the next sync reclaim will reclaim the inode and
+	 * pass on the error.
+	 */
+	if (error && error != EAGAIN && !XFS_FORCED_SHUTDOWN(ip->i_mount)) {
+		xfs_fs_cmn_err(CE_WARN, ip->i_mount,
+			"inode 0x%llx background reclaim flush failed with %d",
+			(long long)ip->i_ino, error);
+	}
+out:
+	xfs_iflags_clear(ip, XFS_IRECLAIM);
+	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+	/*
+	 * We could return EAGAIN here to make reclaim rescan the inode tree in
+	 * a short while. However, this just burns CPU time scanning the tree
+	 * waiting for IO to complete and xfssyncd never goes back to the idle
+	 * state. Instead, return 0 to let the next scheduled background reclaim
+	 * attempt to reclaim the inode again.
+	 */
+	return 0;
+
+reclaim:
+	xfs_ifunlock(ip);
+	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+
+	XFS_STATS_INC(xs_ig_reclaims);
+	/*
+	 * Remove the inode from the per-AG radix tree.
+	 *
+	 * Because radix_tree_delete won't complain even if the item was never
+	 * added to the tree assert that it's been there before to catch
+	 * problems with the inode life time early on.
+	 */
+	write_lock(&pag->pag_ici_lock);
+	if (!radix_tree_delete(&pag->pag_ici_root,
+				XFS_INO_TO_AGINO(ip->i_mount, ip->i_ino)))
+		ASSERT(0);
+	__xfs_inode_clear_reclaim(pag, ip);
+	write_unlock(&pag->pag_ici_lock);
+
+	/*
+	 * Here we do an (almost) spurious inode lock in order to coordinate
+	 * with inode cache radix tree lookups.  This is because the lookup
+	 * can reference the inodes in the cache without taking references.
+	 *
+	 * We make that OK here by ensuring that we wait until the inode is
+	 * unlocked after the lookup before we go ahead and free it.  We get
+	 * both the ilock and the iolock because the code may need to drop the
+	 * ilock one but will still hold the iolock.
+	 */
+	xfs_ilock(ip, XFS_ILOCK_EXCL | XFS_IOLOCK_EXCL);
+	xfs_qm_dqdetach(ip);
+	xfs_iunlock(ip, XFS_ILOCK_EXCL | XFS_IOLOCK_EXCL);
+
+	xfs_inode_free(ip);
+	return error;
+
+}
+
+/*
+ * Walk the AGs and reclaim the inodes in them. Even if the filesystem is
+ * corrupted, we still want to try to reclaim all the inodes. If we don't,
+ * then a shut down during filesystem unmount reclaim walk leak all the
+ * unreclaimed inodes.
+ */
+int
+xfs_reclaim_inodes_ag(
+	struct xfs_mount	*mp,
+	int			flags,
+	int			*nr_to_scan)
+{
+	struct xfs_perag	*pag;
+	int			error = 0;
+	int			last_error = 0;
+	xfs_agnumber_t		ag;
+	int			trylock = flags & SYNC_TRYLOCK;
+	int			skipped;
 
 restart:
-	first_index = 0;
+	ag = 0;
 	skipped = 0;
-	do {
-		/*
-		 * use a gang lookup to find the next inode in the tree
-		 * as the tree is sparse and a gang lookup walks to find
-		 * the number of objects requested.
-		 */
-		read_lock(&pag->pag_ici_lock);
-		nr_found = radix_tree_gang_lookup_tag(&pag->pag_ici_root,
-					(void**)&ip, first_index, 1,
+	while ((pag = xfs_perag_get_tag(mp, ag, XFS_ICI_RECLAIM_TAG))) {
+		unsigned long	first_index = 0;
+		int		done = 0;
+		int		nr_found = 0;
+
+		ag = pag->pag_agno + 1;
+
+		if (trylock) {
+			if (!mutex_trylock(&pag->pag_ici_reclaim_lock)) {
+				skipped++;
+				xfs_perag_put(pag);
+				continue;
+			}
+			first_index = pag->pag_ici_reclaim_cursor;
+		} else
+			mutex_lock(&pag->pag_ici_reclaim_lock);
+
+		do {
+			struct xfs_inode *batch[XFS_LOOKUP_BATCH];
+			int	i;
+
+			write_lock(&pag->pag_ici_lock);
+			nr_found = radix_tree_gang_lookup_tag(
+					&pag->pag_ici_root,
+					(void **)batch, first_index,
+					XFS_LOOKUP_BATCH,
 					XFS_ICI_RECLAIM_TAG);
-
-		if (!nr_found) {
-			read_unlock(&pag->pag_ici_lock);
-			break;
-		}
-
-		/*
-		 * Update the index for the next lookup. Catch overflows
-		 * into the next AG range which can occur if we have inodes
-		 * in the last block of the AG and we are currently
-		 * pointing to the last inode.
-		 */
-		first_index = XFS_INO_TO_AGINO(mp, ip->i_ino + 1);
-		if (first_index < XFS_INO_TO_AGINO(mp, ip->i_ino)) {
-			read_unlock(&pag->pag_ici_lock);
-			break;
-		}
-
-		/* ignore if already under reclaim */
-		if (xfs_iflags_test(ip, XFS_IRECLAIM)) {
-			read_unlock(&pag->pag_ici_lock);
-			continue;
-		}
-
-		if (noblock) {
-			if (!xfs_ilock_nowait(ip, XFS_ILOCK_EXCL)) {
-				read_unlock(&pag->pag_ici_lock);
-				continue;
+			if (!nr_found) {
+				write_unlock(&pag->pag_ici_lock);
+				break;
 			}
-			if (xfs_ipincount(ip) ||
-			    !xfs_iflock_nowait(ip)) {
-				xfs_iunlock(ip, XFS_ILOCK_EXCL);
-				read_unlock(&pag->pag_ici_lock);
-				continue;
+
+			/*
+			 * Grab the inodes before we drop the lock. if we found
+			 * nothing, nr == 0 and the loop will be skipped.
+			 */
+			for (i = 0; i < nr_found; i++) {
+				struct xfs_inode *ip = batch[i];
+
+				if (done || xfs_reclaim_inode_grab(ip, flags))
+					batch[i] = NULL;
+
+				/*
+				 * Update the index for the next lookup. Catch
+				 * overflows into the next AG range which can
+				 * occur if we have inodes in the last block of
+				 * the AG and we are currently pointing to the
+				 * last inode.
+				 */
+				first_index = XFS_INO_TO_AGINO(mp, ip->i_ino + 1);
+				if (first_index < XFS_INO_TO_AGINO(mp, ip->i_ino))
+					done = 1;
 			}
-		}
-		read_unlock(&pag->pag_ici_lock);
 
-		/*
-		 * hmmm - this is an inode already in reclaim. Do
-		 * we even bother catching it here?
-		 */
-		if (xfs_reclaim_inode(ip, noblock, mode))
-			skipped++;
-	} while (nr_found);
+			/* unlock now we've grabbed the inodes. */
+			write_unlock(&pag->pag_ici_lock);
 
-	if (skipped) {
-		delay(1);
+			for (i = 0; i < nr_found; i++) {
+				if (!batch[i])
+					continue;
+				error = xfs_reclaim_inode(batch[i], pag, flags);
+				if (error && last_error != EFSCORRUPTED)
+					last_error = error;
+			}
+
+			*nr_to_scan -= XFS_LOOKUP_BATCH;
+
+		} while (nr_found && !done && *nr_to_scan > 0);
+
+		if (trylock && !done)
+			pag->pag_ici_reclaim_cursor = first_index;
+		else
+			pag->pag_ici_reclaim_cursor = 0;
+		mutex_unlock(&pag->pag_ici_reclaim_lock);
+		xfs_perag_put(pag);
+	}
+
+	/*
+	 * if we skipped any AG, and we still have scan count remaining, do
+	 * another pass this time using blocking reclaim semantics (i.e
+	 * waiting on the reclaim locks and ignoring the reclaim cursors). This
+	 * ensure that when we get more reclaimers than AGs we block rather
+	 * than spin trying to execute reclaim.
+	 */
+	if (trylock && skipped && *nr_to_scan > 0) {
+		trylock = 0;
 		goto restart;
 	}
-	return;
-
+	return XFS_ERROR(last_error);
 }
 
 int
 xfs_reclaim_inodes(
 	xfs_mount_t	*mp,
-	int		 noblock,
 	int		mode)
 {
-	int		i;
+	int		nr_to_scan = INT_MAX;
 
-	for (i = 0; i < mp->m_sb.sb_agcount; i++) {
-		if (!mp->m_perag[i].pag_ici_init)
-			continue;
-		xfs_reclaim_inodes_ag(mp, i, noblock, mode);
-	}
-	return 0;
+	return xfs_reclaim_inodes_ag(mp, mode, &nr_to_scan);
 }
 
+/*
+ * Shrinker infrastructure.
+ */
+static int
+xfs_reclaim_inode_shrink(
+	struct shrinker	*shrink,
+	int		nr_to_scan,
+	gfp_t		gfp_mask)
+{
+	struct xfs_mount *mp;
+	struct xfs_perag *pag;
+	xfs_agnumber_t	ag;
+	int		reclaimable;
 
+	mp = container_of(shrink, struct xfs_mount, m_inode_shrink);
+	if (nr_to_scan) {
+		if (!(gfp_mask & __GFP_FS))
+			return -1;
+
+		xfs_reclaim_inodes_ag(mp, SYNC_TRYLOCK, &nr_to_scan);
+		/* terminate if we don't exhaust the scan */
+		if (nr_to_scan > 0)
+			return -1;
+       }
+
+	reclaimable = 0;
+	ag = 0;
+	while ((pag = xfs_perag_get_tag(mp, ag, XFS_ICI_RECLAIM_TAG))) {
+		ag = pag->pag_agno + 1;
+		reclaimable += pag->pag_ici_reclaimable;
+		xfs_perag_put(pag);
+	}
+	return reclaimable;
+}
+
+void
+xfs_inode_shrinker_register(
+	struct xfs_mount	*mp)
+{
+	mp->m_inode_shrink.shrink = xfs_reclaim_inode_shrink;
+	mp->m_inode_shrink.seeks = DEFAULT_SEEKS;
+	register_shrinker(&mp->m_inode_shrink);
+}
+
+void
+xfs_inode_shrinker_unregister(
+	struct xfs_mount	*mp)
+{
+	unregister_shrinker(&mp->m_inode_shrink);
+}

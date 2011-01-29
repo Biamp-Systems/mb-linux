@@ -30,7 +30,6 @@
 #include <mach/audio.h>
 
 #include "../codecs/wm8731.h"
-#include "pxa2xx-pcm.h"
 #include "pxa2xx-i2s.h"
 
 #define CORGI_HP        0
@@ -99,10 +98,15 @@ static void corgi_ext_control(struct snd_soc_codec *codec)
 static int corgi_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->socdev->card->codec;
+	struct snd_soc_codec *codec = rtd->codec;
+
+	mutex_lock(&codec->mutex);
 
 	/* check the jack status at stream startup */
 	corgi_ext_control(codec);
+
+	mutex_unlock(&codec->mutex);
+
 	return 0;
 }
 
@@ -118,8 +122,8 @@ static int corgi_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->dai->codec_dai;
-	struct snd_soc_dai *cpu_dai = rtd->dai->cpu_dai;
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	unsigned int clk = 0;
 	int ret = 0;
 
@@ -150,7 +154,7 @@ static int corgi_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 
 	/* set the codec system clock for DAC and ADC */
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8731_SYSCLK, clk,
+	ret = snd_soc_dai_set_sysclk(codec_dai, WM8731_SYSCLK_XTAL, clk,
 		SND_SOC_CLOCK_IN);
 	if (ret < 0)
 		return ret;
@@ -272,8 +276,9 @@ static const struct snd_kcontrol_new wm8731_corgi_controls[] = {
 /*
  * Logic for a wm8731 as connected on a Sharp SL-C7x0 Device
  */
-static int corgi_wm8731_init(struct snd_soc_codec *codec)
+static int corgi_wm8731_init(struct snd_soc_pcm_runtime *rtd)
 {
+	struct snd_soc_codec *codec = rtd->codec;
 	int err;
 
 	snd_soc_dapm_nc_pin(codec, "LLINEIN");
@@ -300,8 +305,10 @@ static int corgi_wm8731_init(struct snd_soc_codec *codec)
 static struct snd_soc_dai_link corgi_dai = {
 	.name = "WM8731",
 	.stream_name = "WM8731",
-	.cpu_dai = &pxa_i2s_dai,
-	.codec_dai = &wm8731_dai,
+	.cpu_dai_name = "pxa-is2-dai",
+	.codec_dai_name = "wm8731-hifi",
+	.platform_name = "pxa-pcm-audio",
+	.codec_name = "wm8731-codec-0.001a",
 	.init = corgi_wm8731_init,
 	.ops = &corgi_ops,
 };
@@ -309,48 +316,9 @@ static struct snd_soc_dai_link corgi_dai = {
 /* corgi audio machine driver */
 static struct snd_soc_card snd_soc_corgi = {
 	.name = "Corgi",
-	.platform = &pxa2xx_soc_platform,
 	.dai_link = &corgi_dai,
 	.num_links = 1,
 };
-
-/* corgi audio subsystem */
-static struct snd_soc_device corgi_snd_devdata = {
-	.card = &snd_soc_corgi,
-	.codec_dev = &soc_codec_dev_wm8731,
-};
-
-/*
- * FIXME: This is a temporary bodge to avoid cross-tree merge issues.
- * New drivers should register the wm8731 I2C device in the machine
- * setup code (under arch/arm for ARM systems).
- */
-static int wm8731_i2c_register(void)
-{
-	struct i2c_board_info info;
-	struct i2c_adapter *adapter;
-	struct i2c_client *client;
-
-	memset(&info, 0, sizeof(struct i2c_board_info));
-	info.addr = 0x1b;
-	strlcpy(info.type, "wm8731", I2C_NAME_SIZE);
-
-	adapter = i2c_get_adapter(0);
-	if (!adapter) {
-		printk(KERN_ERR "can't get i2c adapter 0\n");
-		return -ENODEV;
-	}
-
-	client = i2c_new_device(adapter, &info);
-	i2c_put_adapter(adapter);
-	if (!client) {
-		printk(KERN_ERR "can't add i2c device at 0x%x\n",
-			(unsigned int)info.addr);
-		return -ENODEV;
-	}
-
-	return 0;
-}
 
 static struct platform_device *corgi_snd_device;
 
@@ -362,16 +330,11 @@ static int __init corgi_init(void)
 	      machine_is_husky()))
 		return -ENODEV;
 
-	ret = wm8731_i2c_register();
-	if (ret != 0)
-		return ret;
-
 	corgi_snd_device = platform_device_alloc("soc-audio", -1);
 	if (!corgi_snd_device)
 		return -ENOMEM;
 
-	platform_set_drvdata(corgi_snd_device, &corgi_snd_devdata);
-	corgi_snd_devdata.dev = &corgi_snd_device->dev;
+	platform_set_drvdata(corgi_snd_device, &snd_soc_corgi);
 	ret = platform_device_add(corgi_snd_device);
 
 	if (ret)

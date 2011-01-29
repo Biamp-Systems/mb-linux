@@ -181,9 +181,9 @@ static void mss2_power_off(void)
 	/*
 	 * Enable and issue soft reset
 	 */
-	reg = readl(CPU_RESET_MASK);
+	reg = readl(RSTOUTn_MASK);
 	reg |= 1 << 2;
-	writel(reg, CPU_RESET_MASK);
+	writel(reg, RSTOUTn_MASK);
 
 	reg = readl(CPU_SOFT_RESET);
 	reg |= 1;
@@ -261,8 +261,6 @@ static void __init mss2_init(void)
 
 MACHINE_START(MSS2, "Maxtor Shared Storage II")
 	/* Maintainer: Sylver Bruneau <sylver.bruneau@googlemail.com> */
-	.phys_io	= ORION5X_REGS_PHYS_BASE,
-	.io_pg_offst	= ((ORION5X_REGS_VIRT_BASE) >> 18) & 0xFFFC,
 	.boot_params	= 0x00000100,
 	.init_machine	= mss2_init,
 	.map_io		= orion5x_map_io,

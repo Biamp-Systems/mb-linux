@@ -37,29 +37,6 @@ struct channel_path_desc {
 
 struct channel_path;
 
-struct css_general_char {
-	u64 : 12;
-	u32 dynio : 1;	 /* bit 12 */
-	u32 : 28;
-	u32 aif : 1;     /* bit 41 */
-	u32 : 3;
-	u32 mcss : 1;    /* bit 45 */
-	u32 fcs : 1;	 /* bit 46 */
-	u32 : 1;
-	u32 ext_mb : 1;  /* bit 48 */
-	u32 : 7;
-	u32 aif_tdd : 1; /* bit 56 */
-	u32 : 1;
-	u32 qebsm : 1;   /* bit 58 */
-	u32 : 8;
-	u32 aif_osa : 1; /* bit 67 */
-	u32 : 14;
-	u32 cib : 1;	 /* bit 82 */
-	u32 : 5;
-	u32 fcx : 1;	 /* bit 88 */
-	u32 : 7;
-}__attribute__((packed));
-
 struct css_chsc_char {
 	u64 res;
 	u64 : 20;
@@ -72,7 +49,6 @@ struct css_chsc_char {
 	u32 : 19;
 }__attribute__((packed));
 
-extern struct css_general_char css_general_characteristics;
 extern struct css_chsc_char css_chsc_characteristics;
 
 struct chsc_ssd_info {
@@ -81,20 +57,39 @@ struct chsc_ssd_info {
 	struct chp_id chpid[8];
 	u16 fla[8];
 };
+
+struct chsc_scpd {
+	struct chsc_header request;
+	u32:2;
+	u32 m:1;
+	u32 c:1;
+	u32 fmt:4;
+	u32 cssid:8;
+	u32:4;
+	u32 rfmt:4;
+	u32 first_chpid:8;
+	u32:24;
+	u32 last_chpid:8;
+	u32 zeroes1;
+	struct chsc_header response;
+	u8 data[PAGE_SIZE - 20];
+} __attribute__ ((packed));
+
+
 extern int chsc_get_ssd_info(struct subchannel_id schid,
 			     struct chsc_ssd_info *ssd);
 extern int chsc_determine_css_characteristics(void);
-extern int chsc_alloc_sei_area(void);
-extern void chsc_free_sei_area(void);
+extern int chsc_init(void);
+extern void chsc_init_cleanup(void);
 
 extern int chsc_enable_facility(int);
 struct channel_subsystem;
 extern int chsc_secm(struct channel_subsystem *, int);
+int __chsc_do_secm(struct channel_subsystem *css, int enable);
 
 int chsc_chp_vary(struct chp_id chpid, int on);
 int chsc_determine_channel_path_desc(struct chp_id chpid, int fmt, int rfmt,
-				     int c, int m,
-				     struct chsc_response_struct *resp);
+				     int c, int m, void *page);
 int chsc_determine_base_channel_path_desc(struct chp_id chpid,
 					  struct channel_path_desc *desc);
 void chsc_chp_online(struct chp_id chpid);
@@ -102,5 +97,7 @@ void chsc_chp_offline(struct chp_id chpid);
 int chsc_get_channel_measurement_chars(struct channel_path *chp);
 
 int chsc_error_from_response(int response);
+
+int chsc_siosl(struct subchannel_id schid);
 
 #endif

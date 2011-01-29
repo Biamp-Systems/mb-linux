@@ -62,6 +62,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 
@@ -1977,9 +1978,9 @@ static int ep_enable(struct usb_ep *ep,
 	if (!list_empty(&mEp->qh[mEp->dir].queue))
 		warn("enabling a non-empty endpoint!");
 
-	mEp->dir  = (desc->bEndpointAddress & USB_ENDPOINT_DIR_MASK) ? TX : RX;
-	mEp->num  =  desc->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK;
-	mEp->type =  desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK;
+	mEp->dir  = usb_endpoint_dir_in(desc) ? TX : RX;
+	mEp->num  = usb_endpoint_num(desc);
+	mEp->type = usb_endpoint_type(desc);
 
 	mEp->ep.maxpacket = __constant_le16_to_cpu(desc->wMaxPacketSize);
 
@@ -2339,12 +2340,15 @@ static const struct usb_ep_ops usb_ep_ops = {
 static const struct usb_gadget_ops usb_gadget_ops;
 
 /**
- * usb_gadget_register_driver: register a gadget driver
+ * usb_gadget_probe_driver: register a gadget driver
+ * @driver: the driver being registered
+ * @bind: the driver's bind callback
  *
- * Check usb_gadget_register_driver() at "usb_gadget.h" for details
- * Interrupts are enabled here
+ * Check usb_gadget_probe_driver() at <linux/usb/gadget.h> for details.
+ * Interrupts are enabled here.
  */
-int usb_gadget_register_driver(struct usb_gadget_driver *driver)
+int usb_gadget_probe_driver(struct usb_gadget_driver *driver,
+		int (*bind)(struct usb_gadget *))
 {
 	struct ci13xxx *udc = _udc;
 	unsigned long i, k, flags;
@@ -2353,7 +2357,7 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 	trace("%p", driver);
 
 	if (driver             == NULL ||
-	    driver->bind       == NULL ||
+	    bind               == NULL ||
 	    driver->unbind     == NULL ||
 	    driver->setup      == NULL ||
 	    driver->disconnect == NULL ||
@@ -2429,7 +2433,7 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 	udc->gadget.dev.driver = &driver->driver;
 
 	spin_unlock_irqrestore(udc->lock, flags);
-	retval = driver->bind(&udc->gadget);                /* MAY SLEEP */
+	retval = bind(&udc->gadget);                /* MAY SLEEP */
 	spin_lock_irqsave(udc->lock, flags);
 
 	if (retval) {
@@ -2446,7 +2450,7 @@ int usb_gadget_register_driver(struct usb_gadget_driver *driver)
 		usb_gadget_unregister_driver(driver);
 	return retval;
 }
-EXPORT_SYMBOL(usb_gadget_register_driver);
+EXPORT_SYMBOL(usb_gadget_probe_driver);
 
 /**
  * usb_gadget_unregister_driver: unregister a gadget driver
@@ -2461,7 +2465,6 @@ int usb_gadget_unregister_driver(struct usb_gadget_driver *driver)
 	trace("%p", driver);
 
 	if (driver             == NULL ||
-	    driver->bind       == NULL ||
 	    driver->unbind     == NULL ||
 	    driver->setup      == NULL ||
 	    driver->disconnect == NULL ||

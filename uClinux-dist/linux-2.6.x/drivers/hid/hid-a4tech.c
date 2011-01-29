@@ -20,6 +20,7 @@
 #include <linux/input.h>
 #include <linux/hid.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 
 #include "hid-ids.h"
 
@@ -132,6 +133,8 @@ static const struct hid_device_id a4_devices[] = {
 		.driver_data = A4_2WHEEL_MOUSE_HACK_7 },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_A4TECH, USB_DEVICE_ID_A4TECH_X5_005D),
 		.driver_data = A4_2WHEEL_MOUSE_HACK_B8 },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_A4TECH, USB_DEVICE_ID_A4TECH_RP_649),
+		.driver_data = A4_2WHEEL_MOUSE_HACK_B8 },
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, a4_devices);
@@ -145,12 +148,12 @@ static struct hid_driver a4_driver = {
 	.remove = a4_remove,
 };
 
-static int a4_init(void)
+static int __init a4_init(void)
 {
 	return hid_register_driver(&a4_driver);
 }
 
-static void a4_exit(void)
+static void __exit a4_exit(void)
 {
 	hid_unregister_driver(&a4_driver);
 }

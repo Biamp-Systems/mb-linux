@@ -20,6 +20,7 @@
 #include <linux/vmalloc.h>
 #include <linux/security.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 #include <net/net_namespace.h>
 #include <net/netlabel.h>
 #include <net/cipso_ipv4.h>
@@ -41,6 +42,7 @@ enum smk_inos {
 	SMK_AMBIENT	= 7,	/* internet ambient label */
 	SMK_NETLBLADDR	= 8,	/* single label hosts */
 	SMK_ONLYCAP	= 9,	/* the only "capable" label */
+	SMK_LOGGING	= 10,	/* logging */
 };
 
 /*
@@ -186,7 +188,7 @@ static void load_seq_stop(struct seq_file *s, void *v)
 	/* No-op */
 }
 
-static struct seq_operations load_seq_ops = {
+static const struct seq_operations load_seq_ops = {
 	.start = load_seq_start,
 	.next  = load_seq_next,
 	.show  = load_seq_show,
@@ -502,7 +504,7 @@ static void cipso_seq_stop(struct seq_file *s, void *v)
 	/* No-op */
 }
 
-static struct seq_operations cipso_seq_ops = {
+static const struct seq_operations cipso_seq_ops = {
 	.start = cipso_seq_start,
 	.stop  = cipso_seq_stop,
 	.next  = cipso_seq_next,
@@ -696,7 +698,7 @@ static void netlbladdr_seq_stop(struct seq_file *s, void *v)
 	/* No-op */
 }
 
-static struct seq_operations netlbladdr_seq_ops = {
+static const struct seq_operations netlbladdr_seq_ops = {
 	.start = netlbladdr_seq_start,
 	.stop  = netlbladdr_seq_stop,
 	.next  = netlbladdr_seq_next,
@@ -734,8 +736,8 @@ static void smk_netlbladdr_insert(struct smk_netlbladdr *new)
 		return;
 	}
 
-	m = list_entry(rcu_dereference(smk_netlbladdr_list.next),
-			 struct smk_netlbladdr, list);
+	m = list_entry_rcu(smk_netlbladdr_list.next,
+			   struct smk_netlbladdr, list);
 
 	/* the comparison '>' is a bit hacky, but works */
 	if (new->smk_mask.s_addr > m->smk_mask.s_addr) {
@@ -748,8 +750,8 @@ static void smk_netlbladdr_insert(struct smk_netlbladdr *new)
 			list_add_rcu(&new->list, &m->list);
 			return;
 		}
-		m_next = list_entry(rcu_dereference(m->list.next),
-				 struct smk_netlbladdr, list);
+		m_next = list_entry_rcu(m->list.next,
+					struct smk_netlbladdr, list);
 		if (new->smk_mask.s_addr > m_next->smk_mask.s_addr) {
 			list_add_rcu(&new->list, &m->list);
 			return;
@@ -775,7 +777,7 @@ static ssize_t smk_write_netlbladdr(struct file *file, const char __user *buf,
 	struct sockaddr_in newname;
 	char smack[SMK_LABELLEN];
 	char *sp;
-	char data[SMK_NETLBLADDRMAX];
+	char data[SMK_NETLBLADDRMAX + 1];
 	char *host = (char *)&newname.sin_addr.s_addr;
 	int rc;
 	struct netlbl_audit audit_info;
@@ -966,6 +968,7 @@ static ssize_t smk_write_doi(struct file *file, const char __user *buf,
 static const struct file_operations smk_doi_ops = {
 	.read		= smk_read_doi,
 	.write		= smk_write_doi,
+	.llseek		= default_llseek,
 };
 
 /**
@@ -1029,6 +1032,7 @@ static ssize_t smk_write_direct(struct file *file, const char __user *buf,
 static const struct file_operations smk_direct_ops = {
 	.read		= smk_read_direct,
 	.write		= smk_write_direct,
+	.llseek		= default_llseek,
 };
 
 /**
@@ -1110,6 +1114,7 @@ static ssize_t smk_write_ambient(struct file *file, const char __user *buf,
 static const struct file_operations smk_ambient_ops = {
 	.read		= smk_read_ambient,
 	.write		= smk_write_ambient,
+	.llseek		= default_llseek,
 };
 
 /**
@@ -1189,8 +1194,73 @@ static ssize_t smk_write_onlycap(struct file *file, const char __user *buf,
 static const struct file_operations smk_onlycap_ops = {
 	.read		= smk_read_onlycap,
 	.write		= smk_write_onlycap,
+	.llseek		= default_llseek,
 };
 
+/**
+ * smk_read_logging - read() for /smack/logging
+ * @filp: file pointer, not actually used
+ * @buf: where to put the result
+ * @cn: maximum to send along
+ * @ppos: where to start
+ *
+ * Returns number of bytes read or error code, as appropriate
+ */
+static ssize_t smk_read_logging(struct file *filp, char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	char temp[32];
+	ssize_t rc;
+
+	if (*ppos != 0)
+		return 0;
+
+	sprintf(temp, "%d\n", log_policy);
+	rc = simple_read_from_buffer(buf, count, ppos, temp, strlen(temp));
+	return rc;
+}
+
+/**
+ * smk_write_logging - write() for /smack/logging
+ * @file: file pointer, not actually used
+ * @buf: where to get the data from
+ * @count: bytes sent
+ * @ppos: where to start
+ *
+ * Returns number of bytes written or error code, as appropriate
+ */
+static ssize_t smk_write_logging(struct file *file, const char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	char temp[32];
+	int i;
+
+	if (!capable(CAP_MAC_ADMIN))
+		return -EPERM;
+
+	if (count >= sizeof(temp) || count == 0)
+		return -EINVAL;
+
+	if (copy_from_user(temp, buf, count) != 0)
+		return -EFAULT;
+
+	temp[count] = '\0';
+
+	if (sscanf(temp, "%d", &i) != 1)
+		return -EINVAL;
+	if (i < 0 || i > 3)
+		return -EINVAL;
+	log_policy = i;
+	return count;
+}
+
+
+
+static const struct file_operations smk_logging_ops = {
+	.read		= smk_read_logging,
+	.write		= smk_write_logging,
+	.llseek		= default_llseek,
+};
 /**
  * smk_fill_super - fill the /smackfs superblock
  * @sb: the empty superblock
@@ -1221,6 +1291,8 @@ static int smk_fill_super(struct super_block *sb, void *data, int silent)
 			{"netlabel", &smk_netlbladdr_ops, S_IRUGO|S_IWUSR},
 		[SMK_ONLYCAP]	=
 			{"onlycap", &smk_onlycap_ops, S_IRUGO|S_IWUSR},
+		[SMK_LOGGING]	=
+			{"logging", &smk_logging_ops, S_IRUGO|S_IWUSR},
 		/* last one */ {""}
 	};
 
@@ -1238,27 +1310,25 @@ static int smk_fill_super(struct super_block *sb, void *data, int silent)
 }
 
 /**
- * smk_get_sb - get the smackfs superblock
+ * smk_mount - get the smackfs superblock
  * @fs_type: passed along without comment
  * @flags: passed along without comment
  * @dev_name: passed along without comment
  * @data: passed along without comment
- * @mnt: passed along without comment
  *
  * Just passes everything along.
  *
  * Returns what the lower level code does.
  */
-static int smk_get_sb(struct file_system_type *fs_type,
-		      int flags, const char *dev_name, void *data,
-		      struct vfsmount *mnt)
+static struct dentry *smk_mount(struct file_system_type *fs_type,
+		      int flags, const char *dev_name, void *data)
 {
-	return get_sb_single(fs_type, flags, data, smk_fill_super, mnt);
+	return mount_single(fs_type, flags, data, smk_fill_super);
 }
 
 static struct file_system_type smk_fs_type = {
 	.name		= "smackfs",
-	.get_sb		= smk_get_sb,
+	.mount		= smk_mount,
 	.kill_sb	= kill_litter_super,
 };
 

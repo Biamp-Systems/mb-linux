@@ -6,7 +6,7 @@
  *	D-77833 Ottersweier
  *	Tel: +19(0)7223/9493-0
  *	Fax: +49(0)7223/9493-92
- *	http://www.addi-data-com
+ *	http://www.addi-data.com
  *	info@addi-data.com
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -44,7 +44,7 @@
 #define APCI1710_SYNCHRONOUS_MODE	1
 #define APCI1710_ASYNCHRONOUS_MODE	0
 
-//MODULE INFO STRUCTURE
+/* MODULE INFO STRUCTURE */
 
 static const struct comedi_lrange range_apci1710_ttl = { 4, {
 						      BIP_RANGE(10),

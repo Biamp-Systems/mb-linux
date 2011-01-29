@@ -17,10 +17,13 @@
 
 #define NFS4_BITMAP_SIZE	2
 #define NFS4_VERIFIER_SIZE	8
-#define NFS4_STATEID_SIZE	16
+#define NFS4_STATEID_SEQID_SIZE 4
+#define NFS4_STATEID_OTHER_SIZE 12
+#define NFS4_STATEID_SIZE	(NFS4_STATEID_SEQID_SIZE + NFS4_STATEID_OTHER_SIZE)
 #define NFS4_FHSIZE		128
 #define NFS4_MAXPATHLEN		PATH_MAX
 #define NFS4_MAXNAMLEN		NAME_MAX
+#define NFS4_OPAQUE_LIMIT	1024
 #define NFS4_MAX_SESSIONID_LEN	16
 
 #define NFS4_ACCESS_READ        0x0001
@@ -59,6 +62,9 @@
 #define NFS4_SHARE_WHEN_MASK		0xF0000
 #define NFS4_SHARE_SIGNAL_DELEG_WHEN_RESRC_AVAIL	0x10000
 #define NFS4_SHARE_PUSH_DELEG_WHEN_UNCONTENDED		0x20000
+
+#define NFS4_CDFC4_FORE	0x1
+#define NFS4_CDFC4_BACK 0x2
 
 #define NFS4_SET_TO_SERVER_TIME	0
 #define NFS4_SET_TO_CLIENT_TIME	1
@@ -127,8 +133,20 @@
 #define SEQ4_STATUS_RECALLABLE_STATE_REVOKED	0x00000040
 #define SEQ4_STATUS_LEASE_MOVED			0x00000080
 #define SEQ4_STATUS_RESTART_RECLAIM_NEEDED	0x00000100
+#define SEQ4_STATUS_CB_PATH_DOWN_SESSION	0x00000200
+#define SEQ4_STATUS_BACKCHANNEL_FAULT		0x00000400
 
 #define NFS4_MAX_UINT64	(~(u64)0)
+
+/* An NFS4 sessions server must support at least NFS4_MAX_OPS operations.
+ * If a compound requires more operations, adjust NFS4_MAX_OPS accordingly.
+ */
+#define NFS4_MAX_OPS   8
+
+/* Our NFS4 client back channel server only wants the cb_sequene and the
+ * actual operation per compound
+ */
+#define NFS4_MAX_BACK_CHANNEL_OPS 2
 
 enum nfs4_acl_whotype {
 	NFS4_ACL_WHO_NAMED = 0,
@@ -154,7 +172,16 @@ struct nfs4_acl {
 };
 
 typedef struct { char data[NFS4_VERIFIER_SIZE]; } nfs4_verifier;
-typedef struct { char data[NFS4_STATEID_SIZE]; } nfs4_stateid;
+
+struct nfs41_stateid {
+	__be32 seqid;
+	char other[NFS4_STATEID_OTHER_SIZE];
+} __attribute__ ((packed));
+
+typedef union {
+	char data[NFS4_STATEID_SIZE];
+	struct nfs41_stateid stateid;
+} nfs4_stateid;
 
 enum nfs_opnum4 {
 	OP_ACCESS = 3,
@@ -223,7 +250,7 @@ enum nfs_opnum4 {
 Needs to be updated if more operations are defined in future.*/
 
 #define FIRST_NFS4_OP	OP_ACCESS
-#define LAST_NFS4_OP 	OP_RELEASE_LOCKOWNER
+#define LAST_NFS4_OP 	OP_RECLAIM_COMPLETE
 
 enum nfsstat4 {
 	NFS4_OK = 0,
@@ -458,10 +485,20 @@ enum lock_type4 {
 #define FATTR4_WORD1_TIME_MODIFY        (1UL << 21)
 #define FATTR4_WORD1_TIME_MODIFY_SET    (1UL << 22)
 #define FATTR4_WORD1_MOUNTED_ON_FILEID  (1UL << 23)
+#define FATTR4_WORD1_FS_LAYOUT_TYPES    (1UL << 30)
+#define FATTR4_WORD2_LAYOUT_BLKSIZE     (1UL << 1)
 
 #define NFSPROC4_NULL 0
 #define NFSPROC4_COMPOUND 1
+#define NFS4_VERSION 4
 #define NFS4_MINOR_VERSION 0
+
+#if defined(CONFIG_NFS_V4_1)
+#define NFS4_MAX_MINOR_VERSION 1
+#else
+#define NFS4_MAX_MINOR_VERSION 0
+#endif /* CONFIG_NFS_V4_1 */
+
 #define NFS4_DEBUG 1
 
 /* Index of predefined Linux client operations */
@@ -502,6 +539,7 @@ enum {
 	NFSPROC4_CLNT_GETACL,
 	NFSPROC4_CLNT_SETACL,
 	NFSPROC4_CLNT_FS_LOCATIONS,
+	NFSPROC4_CLNT_RELEASE_LOCKOWNER,
 
 	/* nfs41 */
 	NFSPROC4_CLNT_EXCHANGE_ID,
@@ -509,6 +547,9 @@ enum {
 	NFSPROC4_CLNT_DESTROY_SESSION,
 	NFSPROC4_CLNT_SEQUENCE,
 	NFSPROC4_CLNT_GET_LEASE_TIME,
+	NFSPROC4_CLNT_RECLAIM_COMPLETE,
+	NFSPROC4_CLNT_LAYOUTGET,
+	NFSPROC4_CLNT_GETDEVICEINFO,
 };
 
 /* nfs41 types */
@@ -525,6 +566,49 @@ enum state_protect_how4 {
 	SP4_NONE	= 0,
 	SP4_MACH_CRED	= 1,
 	SP4_SSV		= 2
+};
+
+enum pnfs_layouttype {
+	LAYOUT_NFSV4_1_FILES  = 1,
+	LAYOUT_OSD2_OBJECTS = 2,
+	LAYOUT_BLOCK_VOLUME = 3,
+};
+
+/* used for both layout return and recall */
+enum pnfs_layoutreturn_type {
+	RETURN_FILE = 1,
+	RETURN_FSID = 2,
+	RETURN_ALL  = 3
+};
+
+enum pnfs_iomode {
+	IOMODE_READ = 1,
+	IOMODE_RW = 2,
+	IOMODE_ANY = 3,
+};
+
+enum pnfs_notify_deviceid_type4 {
+	NOTIFY_DEVICEID4_CHANGE = 1 << 1,
+	NOTIFY_DEVICEID4_DELETE = 1 << 2,
+};
+
+#define NFL4_UFLG_MASK			0x0000003F
+#define NFL4_UFLG_DENSE			0x00000001
+#define NFL4_UFLG_COMMIT_THRU_MDS	0x00000002
+#define NFL4_UFLG_STRIPE_UNIT_SIZE_MASK	0xFFFFFFC0
+
+/* Encoded in the loh_body field of type layouthint4 */
+enum filelayout_hint_care4 {
+	NFLH4_CARE_DENSE		= NFL4_UFLG_DENSE,
+	NFLH4_CARE_COMMIT_THRU_MDS	= NFL4_UFLG_COMMIT_THRU_MDS,
+	NFLH4_CARE_STRIPE_UNIT_SIZE	= 0x00000040,
+	NFLH4_CARE_STRIPE_COUNT		= 0x00000080
+};
+
+#define NFS4_DEVICEID4_SIZE 16
+
+struct nfs4_deviceid {
+	char data[NFS4_DEVICEID4_SIZE];
 };
 
 #endif

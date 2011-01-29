@@ -14,10 +14,13 @@
 #include <asm/prom.h>
 #include <asm/time.h>
 #include <asm/xilinx_intc.h>
+#include <asm/xilinx_pci.h>
 #include <asm/ppc4xx.h>
 
 static struct of_device_id xilinx_of_bus_ids[] __initdata = {
+	{ .compatible = "simple-bus", },
 	{ .compatible = "xlnx,plb-v46-1.00.a", },
+	{ .compatible = "xlnx,plb-v46-1.02.a", },
 	{ .compatible = "xlnx,plb-v34-1.01.a", },
 	{ .compatible = "xlnx,plb-v34-1.02.a", },
 	{ .compatible = "xlnx,opb-v20-1.10.c", },
@@ -38,7 +41,7 @@ static int __init virtex_probe(void)
 {
 	unsigned long root = of_get_flat_dt_root();
 
-	if (!of_flat_dt_is_compatible(root, "xlnx,virtex"))
+	if (!of_flat_dt_is_compatible(root, "xlnx,virtex405"))
 		return 0;
 
 	return 1;
@@ -47,6 +50,7 @@ static int __init virtex_probe(void)
 define_machine(virtex) {
 	.name			= "Xilinx Virtex",
 	.probe			= virtex_probe,
+	.setup_arch		= xilinx_pci_init,
 	.init_IRQ		= xilinx_intc_init_tree,
 	.get_irq		= xilinx_intc_get_irq,
 	.restart		= ppc4xx_reset_system,

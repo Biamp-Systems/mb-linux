@@ -200,7 +200,7 @@ static int flexcop_master_xfer(struct i2c_adapter *i2c_adap,
 					msgs[i].buf[0], &msgs[i].buf[1],
 					msgs[i].len - 1);
 		if (ret < 0) {
-			err("i2c master_xfer failed");
+			deb_i2c("i2c master_xfer failed");
 			break;
 		}
 	}
@@ -245,9 +245,6 @@ int flexcop_i2c_init(struct flexcop_device *fc)
 	i2c_set_adapdata(&fc->fc_i2c_adap[1].i2c_adap, &fc->fc_i2c_adap[1]);
 	i2c_set_adapdata(&fc->fc_i2c_adap[2].i2c_adap, &fc->fc_i2c_adap[2]);
 
-	fc->fc_i2c_adap[0].i2c_adap.class =
-		fc->fc_i2c_adap[1].i2c_adap.class =
-		fc->fc_i2c_adap[2].i2c_adap.class = I2C_CLASS_TV_DIGITAL;
 	fc->fc_i2c_adap[0].i2c_adap.algo =
 		fc->fc_i2c_adap[1].i2c_adap.algo =
 		fc->fc_i2c_adap[2].i2c_adap.algo = &flexcop_algo;

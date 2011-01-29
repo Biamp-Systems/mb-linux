@@ -30,7 +30,9 @@
    basic V4L2 device-level support.
  */
 
-#define V4L2_DEVICE_NAME_SIZE (BUS_ID_SIZE + 16)
+#define V4L2_DEVICE_NAME_SIZE (20 + 16)
+
+struct v4l2_ctrl_handler;
 
 struct v4l2_device {
 	/* dev->driver_data points to this struct.
@@ -47,16 +49,41 @@ struct v4l2_device {
 	/* notify callback called by some sub-devices. */
 	void (*notify)(struct v4l2_subdev *sd,
 			unsigned int notification, void *arg);
+	/* The control handler. May be NULL. */
+	struct v4l2_ctrl_handler *ctrl_handler;
+	/* BKL replacement mutex. Temporary solution only. */
+	struct mutex ioctl_lock;
 };
 
 /* Initialize v4l2_dev and make dev->driver_data point to v4l2_dev.
    dev may be NULL in rare cases (ISA devices). In that case you
    must fill in the v4l2_dev->name field before calling this function. */
 int __must_check v4l2_device_register(struct device *dev, struct v4l2_device *v4l2_dev);
+
+/* Optional function to initialize the name field of struct v4l2_device using
+   the driver name and a driver-global atomic_t instance.
+   This function will increment the instance counter and returns the instance
+   value used in the name.
+
+   Example:
+
+   static atomic_t drv_instance = ATOMIC_INIT(0);
+
+   ...
+
+   instance = v4l2_device_set_name(&v4l2_dev, "foo", &drv_instance);
+
+   The first time this is called the name field will be set to foo0 and
+   this function returns 0. If the name ends with a digit (e.g. cx18),
+   then the name will be set to cx18-0 since cx180 looks really odd. */
+int v4l2_device_set_name(struct v4l2_device *v4l2_dev, const char *basename,
+						atomic_t *instance);
+
 /* Set v4l2_dev->dev to NULL. Call when the USB parent disconnects.
    Since the parent disappears this ensures that v4l2_dev doesn't have an
    invalid parent pointer. */
 void v4l2_device_disconnect(struct v4l2_device *v4l2_dev);
+
 /* Unregister all sub-devices and any other resources related to v4l2_dev. */
 void v4l2_device_unregister(struct v4l2_device *v4l2_dev);
 
@@ -76,46 +103,67 @@ void v4l2_device_unregister_subdev(struct v4l2_subdev *sd);
 /* Call the specified callback for all subdevs matching the condition.
    Ignore any errors. Note that you cannot add or delete a subdev
    while walking the subdevs list. */
-#define __v4l2_device_call_subdevs(v4l2_dev, cond, o, f, args...) 	\
+#define __v4l2_device_call_subdevs_p(v4l2_dev, sd, cond, o, f, args...)	\
 	do { 								\
-		struct v4l2_subdev *sd; 				\
+		list_for_each_entry((sd), &(v4l2_dev)->subdevs, list)	\
+			if ((cond) && (sd)->ops->o && (sd)->ops->o->f)	\
+				(sd)->ops->o->f((sd) , ##args);		\
+	} while (0)
+
+#define __v4l2_device_call_subdevs(v4l2_dev, cond, o, f, args...)	\
+	do {								\
+		struct v4l2_subdev *__sd;				\
 									\
-		list_for_each_entry(sd, &(v4l2_dev)->subdevs, list)   	\
-			if ((cond) && sd->ops->o && sd->ops->o->f) 	\
-				sd->ops->o->f(sd , ##args); 		\
+		__v4l2_device_call_subdevs_p(v4l2_dev, __sd, cond, o,	\
+						f , ##args);		\
 	} while (0)
 
 /* Call the specified callback for all subdevs matching the condition.
    If the callback returns an error other than 0 or -ENOIOCTLCMD, then
    return with that error code. Note that you cannot add or delete a
    subdev while walking the subdevs list. */
-#define __v4l2_device_call_subdevs_until_err(v4l2_dev, cond, o, f, args...) \
+#define __v4l2_device_call_subdevs_until_err_p(v4l2_dev, sd, cond, o, f, args...) \
 ({ 									\
-	struct v4l2_subdev *sd; 					\
-	long err = 0; 							\
+	long __err = 0;							\
 									\
-	list_for_each_entry(sd, &(v4l2_dev)->subdevs, list) { 		\
-		if ((cond) && sd->ops->o && sd->ops->o->f) 		\
-			err = sd->ops->o->f(sd , ##args); 		\
-		if (err && err != -ENOIOCTLCMD)				\
+	list_for_each_entry((sd), &(v4l2_dev)->subdevs, list) {		\
+		if ((cond) && (sd)->ops->o && (sd)->ops->o->f)		\
+			__err = (sd)->ops->o->f((sd) , ##args);		\
+		if (__err && __err != -ENOIOCTLCMD)			\
 			break; 						\
 	} 								\
-	(err == -ENOIOCTLCMD) ? 0 : err; 				\
+	(__err == -ENOIOCTLCMD) ? 0 : __err;				\
+})
+
+#define __v4l2_device_call_subdevs_until_err(v4l2_dev, cond, o, f, args...) \
+({									\
+	struct v4l2_subdev *__sd;					\
+	__v4l2_device_call_subdevs_until_err_p(v4l2_dev, __sd, cond, o,	\
+						f, args...);		\
 })
 
 /* Call the specified callback for all subdevs matching grp_id (if 0, then
    match them all). Ignore any errors. Note that you cannot add or delete
    a subdev while walking the subdevs list. */
-#define v4l2_device_call_all(v4l2_dev, grpid, o, f, args...) 		\
-	__v4l2_device_call_subdevs(v4l2_dev, 				\
-			!(grpid) || sd->grp_id == (grpid), o, f , ##args)
+#define v4l2_device_call_all(v4l2_dev, grpid, o, f, args...)		\
+	do {								\
+		struct v4l2_subdev *__sd;				\
+									\
+		__v4l2_device_call_subdevs_p(v4l2_dev, __sd,		\
+			!(grpid) || __sd->grp_id == (grpid), o, f ,	\
+			##args);					\
+	} while (0)
 
 /* Call the specified callback for all subdevs matching grp_id (if 0, then
    match them all). If the callback returns an error other than 0 or
    -ENOIOCTLCMD, then return with that error code. Note that you cannot
    add or delete a subdev while walking the subdevs list. */
 #define v4l2_device_call_until_err(v4l2_dev, grpid, o, f, args...) 	\
-	__v4l2_device_call_subdevs_until_err(v4l2_dev,			\
-		       !(grpid) || sd->grp_id == (grpid), o, f , ##args)
+({									\
+	struct v4l2_subdev *__sd;					\
+	__v4l2_device_call_subdevs_until_err_p(v4l2_dev, __sd,		\
+			!(grpid) || __sd->grp_id == (grpid), o, f ,	\
+			##args);					\
+})
 
 #endif

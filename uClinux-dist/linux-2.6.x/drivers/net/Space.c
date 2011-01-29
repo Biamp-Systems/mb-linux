@@ -86,6 +86,7 @@ extern struct net_device *mac89x0_probe(int unit);
 extern struct net_device *mc32_probe(int unit);
 extern struct net_device *cops_probe(int unit);
 extern struct net_device *ltpc_probe(void);
+// -wgr- extern struct net_device *xemac_probe(int unit);
 
 /* Detachable devices ("pocket adaptors") */
 extern struct net_device *de620_probe(int unit);
@@ -197,6 +198,9 @@ static struct devprobe2 isa_probes[] __initdata = {
 #ifdef CONFIG_CS89x0
  	{cs89x0_probe, 0},
 #endif
+// -wgr- #ifdef CONFIG_XILINX_EMAC
+// -wgr- 	{xemac_probe, 0},
+// -wgr- #endif
 #ifdef CONFIG_AT1700
 	{at1700_probe, 0},
 #endif
@@ -217,12 +221,6 @@ static struct devprobe2 isa_probes[] __initdata = {
 #endif
 #ifdef CONFIG_EL1		/* 3c501 */
 	{el1_probe, 0},
-#endif
-#ifdef CONFIG_WAVELAN		/* WaveLAN */
-	{wavelan_probe, 0},
-#endif
-#ifdef CONFIG_ARLAN		/* Aironet */
-	{arlan_probe, 0},
 #endif
 #ifdef CONFIG_EL16		/* 3c507 */
 	{el16_probe, 0},

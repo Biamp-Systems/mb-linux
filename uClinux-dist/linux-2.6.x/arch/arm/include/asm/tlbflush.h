@@ -40,6 +40,15 @@
 #define TLB_V6_I_ASID	(1 << 18)
 
 #define TLB_BTB		(1 << 28)
+
+/* Unified Inner Shareable TLB operations (ARMv7 MP extensions) */
+#define TLB_V7_UIS_PAGE	(1 << 19)
+#define TLB_V7_UIS_FULL (1 << 20)
+#define TLB_V7_UIS_ASID (1 << 21)
+
+/* Inner Shareable BTB operation (ARMv7 MP extensions) */
+#define TLB_V7_IS_BTB	(1 << 22)
+
 #define TLB_L2CLEAN_FR	(1 << 29)		/* Feroceon */
 #define TLB_DCLEAN	(1 << 30)
 #define TLB_WB		(1 << 31)
@@ -60,6 +69,10 @@
  */
 #undef _TLB
 #undef MULTI_TLB
+
+#ifdef CONFIG_SMP_ON_UP
+#define MULTI_TLB 1
+#endif
 
 #define v3_tlb_flags	(TLB_V3_FULL | TLB_V3_PAGE)
 
@@ -176,9 +189,23 @@
 # define v6wbi_always_flags	(-1UL)
 #endif
 
+#define v7wbi_tlb_flags_smp	(TLB_WB | TLB_DCLEAN | TLB_V7_IS_BTB | \
+			 TLB_V7_UIS_FULL | TLB_V7_UIS_PAGE | TLB_V7_UIS_ASID)
+#define v7wbi_tlb_flags_up	(TLB_WB | TLB_DCLEAN | TLB_BTB | \
+			 TLB_V6_U_FULL | TLB_V6_U_PAGE | TLB_V6_U_ASID)
+
 #ifdef CONFIG_CPU_TLB_V7
-# define v7wbi_possible_flags	v6wbi_tlb_flags
-# define v7wbi_always_flags	v6wbi_tlb_flags
+
+# ifdef CONFIG_SMP_ON_UP
+#  define v7wbi_possible_flags	(v7wbi_tlb_flags_smp | v7wbi_tlb_flags_up)
+#  define v7wbi_always_flags	(v7wbi_tlb_flags_smp & v7wbi_tlb_flags_up)
+# elif defined(CONFIG_SMP)
+#  define v7wbi_possible_flags	v7wbi_tlb_flags_smp
+#  define v7wbi_always_flags	v7wbi_tlb_flags_smp
+# else
+#  define v7wbi_possible_flags	v7wbi_tlb_flags_up
+#  define v7wbi_always_flags	v7wbi_tlb_flags_up
+# endif
 # ifdef _TLB
 #  define MULTI_TLB 1
 # else
@@ -316,10 +343,18 @@ static inline void local_flush_tlb_all(void)
 		asm("mcr p15, 0, %0, c8, c6, 0" : : "r" (zero) : "cc");
 	if (tlb_flag(TLB_V4_I_FULL | TLB_V6_I_FULL))
 		asm("mcr p15, 0, %0, c8, c5, 0" : : "r" (zero) : "cc");
+	if (tlb_flag(TLB_V7_UIS_FULL))
+		asm("mcr p15, 0, %0, c8, c3, 0" : : "r" (zero) : "cc");
 
 	if (tlb_flag(TLB_BTB)) {
 		/* flush the branch target cache */
 		asm("mcr p15, 0, %0, c7, c5, 6" : : "r" (zero) : "cc");
+		dsb();
+		isb();
+	}
+	if (tlb_flag(TLB_V7_IS_BTB)) {
+		/* flush the branch target cache */
+		asm("mcr p15, 0, %0, c7, c1, 6" : : "r" (zero) : "cc");
 		dsb();
 		isb();
 	}
@@ -334,7 +369,7 @@ static inline void local_flush_tlb_mm(struct mm_struct *mm)
 	if (tlb_flag(TLB_WB))
 		dsb();
 
-	if (cpu_isset(smp_processor_id(), mm->cpu_vm_mask)) {
+	if (cpumask_test_cpu(get_cpu(), mm_cpumask(mm))) {
 		if (tlb_flag(TLB_V3_FULL))
 			asm("mcr p15, 0, %0, c6, c0, 0" : : "r" (zero) : "cc");
 		if (tlb_flag(TLB_V4_U_FULL))
@@ -344,6 +379,7 @@ static inline void local_flush_tlb_mm(struct mm_struct *mm)
 		if (tlb_flag(TLB_V4_I_FULL))
 			asm("mcr p15, 0, %0, c8, c5, 0" : : "r" (zero) : "cc");
 	}
+	put_cpu();
 
 	if (tlb_flag(TLB_V6_U_ASID))
 		asm("mcr p15, 0, %0, c8, c7, 2" : : "r" (asid) : "cc");
@@ -351,11 +387,23 @@ static inline void local_flush_tlb_mm(struct mm_struct *mm)
 		asm("mcr p15, 0, %0, c8, c6, 2" : : "r" (asid) : "cc");
 	if (tlb_flag(TLB_V6_I_ASID))
 		asm("mcr p15, 0, %0, c8, c5, 2" : : "r" (asid) : "cc");
+	if (tlb_flag(TLB_V7_UIS_ASID))
+#ifdef CONFIG_ARM_ERRATA_720789
+		asm("mcr p15, 0, %0, c8, c3, 0" : : "r" (zero) : "cc");
+#else
+		asm("mcr p15, 0, %0, c8, c3, 2" : : "r" (asid) : "cc");
+#endif
 
 	if (tlb_flag(TLB_BTB)) {
 		/* flush the branch target cache */
 		asm("mcr p15, 0, %0, c7, c5, 6" : : "r" (zero) : "cc");
 		dsb();
+	}
+	if (tlb_flag(TLB_V7_IS_BTB)) {
+		/* flush the branch target cache */
+		asm("mcr p15, 0, %0, c7, c1, 6" : : "r" (zero) : "cc");
+		dsb();
+		isb();
 	}
 }
 
@@ -370,7 +418,7 @@ local_flush_tlb_page(struct vm_area_struct *vma, unsigned long uaddr)
 	if (tlb_flag(TLB_WB))
 		dsb();
 
-	if (cpu_isset(smp_processor_id(), vma->vm_mm->cpu_vm_mask)) {
+	if (cpumask_test_cpu(smp_processor_id(), mm_cpumask(vma->vm_mm))) {
 		if (tlb_flag(TLB_V3_PAGE))
 			asm("mcr p15, 0, %0, c6, c0, 0" : : "r" (uaddr) : "cc");
 		if (tlb_flag(TLB_V4_U_PAGE))
@@ -389,11 +437,23 @@ local_flush_tlb_page(struct vm_area_struct *vma, unsigned long uaddr)
 		asm("mcr p15, 0, %0, c8, c6, 1" : : "r" (uaddr) : "cc");
 	if (tlb_flag(TLB_V6_I_PAGE))
 		asm("mcr p15, 0, %0, c8, c5, 1" : : "r" (uaddr) : "cc");
+	if (tlb_flag(TLB_V7_UIS_PAGE))
+#ifdef CONFIG_ARM_ERRATA_720789
+		asm("mcr p15, 0, %0, c8, c3, 3" : : "r" (uaddr & PAGE_MASK) : "cc");
+#else
+		asm("mcr p15, 0, %0, c8, c3, 1" : : "r" (uaddr) : "cc");
+#endif
 
 	if (tlb_flag(TLB_BTB)) {
 		/* flush the branch target cache */
 		asm("mcr p15, 0, %0, c7, c5, 6" : : "r" (zero) : "cc");
 		dsb();
+	}
+	if (tlb_flag(TLB_V7_IS_BTB)) {
+		/* flush the branch target cache */
+		asm("mcr p15, 0, %0, c7, c1, 6" : : "r" (zero) : "cc");
+		dsb();
+		isb();
 	}
 }
 
@@ -424,10 +484,18 @@ static inline void local_flush_tlb_kernel_page(unsigned long kaddr)
 		asm("mcr p15, 0, %0, c8, c6, 1" : : "r" (kaddr) : "cc");
 	if (tlb_flag(TLB_V6_I_PAGE))
 		asm("mcr p15, 0, %0, c8, c5, 1" : : "r" (kaddr) : "cc");
+	if (tlb_flag(TLB_V7_UIS_PAGE))
+		asm("mcr p15, 0, %0, c8, c3, 1" : : "r" (kaddr) : "cc");
 
 	if (tlb_flag(TLB_BTB)) {
 		/* flush the branch target cache */
 		asm("mcr p15, 0, %0, c7, c5, 6" : : "r" (zero) : "cc");
+		dsb();
+		isb();
+	}
+	if (tlb_flag(TLB_V7_IS_BTB)) {
+		/* flush the branch target cache */
+		asm("mcr p15, 0, %0, c7, c1, 6" : : "r" (zero) : "cc");
 		dsb();
 		isb();
 	}
@@ -502,11 +570,20 @@ extern void flush_tlb_kernel_range(unsigned long start, unsigned long end);
 #endif
 
 /*
- * if PG_dcache_dirty is set for the page, we need to ensure that any
+ * If PG_dcache_clean is not set for the page, we need to ensure that any
  * cache entries for the kernels virtual memory range are written
- * back to the page.
+ * back to the page. On ARMv6 and later, the cache coherency is handled via
+ * the set_pte_at() function.
  */
-extern void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr, pte_t pte);
+#if __LINUX_ARM_ARCH__ < 6
+extern void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr,
+	pte_t *ptep);
+#else
+static inline void update_mmu_cache(struct vm_area_struct *vma,
+				    unsigned long addr, pte_t *ptep)
+{
+}
+#endif
 
 #endif
 

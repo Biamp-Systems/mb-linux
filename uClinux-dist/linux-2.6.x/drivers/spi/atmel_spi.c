@@ -18,6 +18,7 @@
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/spi/spi.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <mach/board.h>
@@ -189,14 +190,14 @@ static void atmel_spi_next_xfer_data(struct spi_master *master,
 
 	/* use scratch buffer only when rx or tx data is unspecified */
 	if (xfer->rx_buf)
-		*rx_dma = xfer->rx_dma + xfer->len - len;
+		*rx_dma = xfer->rx_dma + xfer->len - *plen;
 	else {
 		*rx_dma = as->buffer_dma;
 		if (len > BUFFER_SIZE)
 			len = BUFFER_SIZE;
 	}
 	if (xfer->tx_buf)
-		*tx_dma = xfer->tx_dma + xfer->len - len;
+		*tx_dma = xfer->tx_dma + xfer->len - *plen;
 	else {
 		*tx_dma = as->buffer_dma;
 		if (len > BUFFER_SIZE)
@@ -351,8 +352,12 @@ atmel_spi_dma_map_xfer(struct atmel_spi *as, struct spi_transfer *xfer)
 
 	xfer->tx_dma = xfer->rx_dma = INVALID_DMA_ADDRESS;
 	if (xfer->tx_buf) {
+		/* tx_buf is a const void* where we need a void * for the dma
+		 * mapping */
+		void *nonconst_tx = (void *)xfer->tx_buf;
+
 		xfer->tx_dma = dma_map_single(dev,
-				(void *) xfer->tx_buf, xfer->len,
+				nonconst_tx, xfer->len,
 				DMA_TO_DEVICE);
 		if (dma_mapping_error(dev, xfer->tx_dma))
 			return -ENOMEM;
@@ -530,9 +535,6 @@ atmel_spi_interrupt(int irq, void *dev_id)
 	return ret;
 }
 
-/* the spi->mode bits understood by this driver: */
-#define MODEBITS (SPI_CPOL | SPI_CPHA | SPI_CS_HIGH)
-
 static int atmel_spi_setup(struct spi_device *spi)
 {
 	struct atmel_spi	*as;
@@ -555,18 +557,10 @@ static int atmel_spi_setup(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	if (bits == 0)
-		bits = 8;
 	if (bits < 8 || bits > 16) {
 		dev_dbg(&spi->dev,
 				"setup: invalid bits_per_word %u (8 to 16)\n",
 				bits);
-		return -EINVAL;
-	}
-
-	if (spi->mode & ~MODEBITS) {
-		dev_dbg(&spi->dev, "setup: unsupported mode bits %x\n",
-			spi->mode & ~MODEBITS);
 		return -EINVAL;
 	}
 
@@ -664,6 +658,8 @@ static int atmel_spi_transfer(struct spi_device *spi, struct spi_message *msg)
 	struct spi_transfer	*xfer;
 	unsigned long		flags;
 	struct device		*controller = spi->master->dev.parent;
+	u8			bits;
+	struct atmel_spi_device	*asd;
 
 	as = spi_master_get_devdata(spi->master);
 
@@ -682,8 +678,18 @@ static int atmel_spi_transfer(struct spi_device *spi, struct spi_message *msg)
 			return -EINVAL;
 		}
 
+		if (xfer->bits_per_word) {
+			asd = spi->controller_state;
+			bits = (asd->csr >> 4) & 0xf;
+			if (bits != xfer->bits_per_word - 8) {
+				dev_dbg(&spi->dev, "you can't yet change "
+					 "bits_per_word in transfers\n");
+				return -ENOPROTOOPT;
+			}
+		}
+
 		/* FIXME implement these protocol options!! */
-		if (xfer->bits_per_word || xfer->speed_hz) {
+		if (xfer->speed_hz) {
 			dev_dbg(&spi->dev, "no protocol options yet\n");
 			return -ENOPROTOOPT;
 		}
@@ -775,6 +781,9 @@ static int __init atmel_spi_probe(struct platform_device *pdev)
 	if (!master)
 		goto out_free;
 
+	/* the spi->mode bits understood by this driver: */
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
+
 	master->bus_num = pdev->id;
 	master->num_chipselect = 4;
 	master->setup = atmel_spi_setup;
@@ -796,7 +805,7 @@ static int __init atmel_spi_probe(struct platform_device *pdev)
 	spin_lock_init(&as->lock);
 	INIT_LIST_HEAD(&as->queue);
 	as->pdev = pdev;
-	as->regs = ioremap(regs->start, (regs->end - regs->start) + 1);
+	as->regs = ioremap(regs->start, resource_size(regs));
 	if (!as->regs)
 		goto out_free_buffer;
 	as->irq = irq;

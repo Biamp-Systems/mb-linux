@@ -61,9 +61,9 @@ static void shutdown_mappi_irq(unsigned int irq)
 	outl(M32R_ICUCR_ILEVEL7, port);
 }
 
-static struct hw_interrupt_type mappi_irq_type =
+static struct irq_chip mappi_irq_type =
 {
-	.typename = "M32700-IRQ",
+	.name = "M32700-IRQ",
 	.startup = startup_mappi_irq,
 	.shutdown = shutdown_mappi_irq,
 	.enable = enable_mappi_irq,
@@ -134,9 +134,9 @@ static void shutdown_m32700ut_pld_irq(unsigned int irq)
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
 
-static struct hw_interrupt_type m32700ut_pld_irq_type =
+static struct irq_chip m32700ut_pld_irq_type =
 {
-	.typename = "USRV-PLD-IRQ",
+	.name = "USRV-PLD-IRQ",
 	.startup = startup_m32700ut_pld_irq,
 	.shutdown = shutdown_m32700ut_pld_irq,
 	.enable = enable_m32700ut_pld_irq,

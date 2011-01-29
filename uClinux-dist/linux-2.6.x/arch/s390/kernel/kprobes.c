@@ -25,10 +25,12 @@
 #include <linux/preempt.h>
 #include <linux/stop_machine.h>
 #include <linux/kdebug.h>
+#include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/sections.h>
-#include <asm/uaccess.h>
 #include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/hardirq.h>
 
 DEFINE_PER_CPU(struct kprobe *, current_kprobe) = NULL;
 DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
@@ -62,6 +64,8 @@ int __kprobes is_prohibited_opcode(kprobe_opcode_t *instruction)
 	case 0x0b:	/* bsm	 */
 	case 0x83:	/* diag  */
 	case 0x44:	/* ex	 */
+	case 0xac:	/* stnsm */
+	case 0xad:	/* stosm */
 		return -EINVAL;
 	}
 	switch (*(__u16 *) instruction) {
@@ -71,6 +75,7 @@ int __kprobes is_prohibited_opcode(kprobe_opcode_t *instruction)
 	case 0xb258:	/* bsg	 */
 	case 0xb218:	/* pc	 */
 	case 0xb228:	/* pt	 */
+	case 0xb98d:	/* epsw	 */
 		return -EINVAL;
 	}
 	return 0;
@@ -154,66 +159,35 @@ void __kprobes get_instruction_type(struct arch_specific_insn *ainsn)
 
 static int __kprobes swap_instruction(void *aref)
 {
+	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+	unsigned long status = kcb->kprobe_status;
 	struct ins_replace_args *args = aref;
-	u32 *addr;
-	u32 instr;
-	int err = -EFAULT;
+	int rc;
 
-	/*
-	 * Text segment is read-only, hence we use stura to bypass dynamic
-	 * address translation to exchange the instruction. Since stura
-	 * always operates on four bytes, but we only want to exchange two
-	 * bytes do some calculations to get things right. In addition we
-	 * shall not cross any page boundaries (vmalloc area!) when writing
-	 * the new instruction.
-	 */
-	addr = (u32 *)((unsigned long)args->ptr & -4UL);
-	if ((unsigned long)args->ptr & 2)
-		instr = ((*addr) & 0xffff0000) | args->new;
-	else
-		instr = ((*addr) & 0x0000ffff) | args->new << 16;
-
-	asm volatile(
-		"	lra	%1,0(%1)\n"
-		"0:	stura	%2,%1\n"
-		"1:	la	%0,0\n"
-		"2:\n"
-		EX_TABLE(0b,2b)
-		: "+d" (err)
-		: "a" (addr), "d" (instr)
-		: "memory", "cc");
-
-	return err;
+	kcb->kprobe_status = KPROBE_SWAP_INST;
+	rc = probe_kernel_write(args->ptr, &args->new, sizeof(args->new));
+	kcb->kprobe_status = status;
+	return rc;
 }
 
 void __kprobes arch_arm_kprobe(struct kprobe *p)
 {
-	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-	unsigned long status = kcb->kprobe_status;
 	struct ins_replace_args args;
 
 	args.ptr = p->addr;
 	args.old = p->opcode;
 	args.new = BREAKPOINT_INSTRUCTION;
-
-	kcb->kprobe_status = KPROBE_SWAP_INST;
 	stop_machine(swap_instruction, &args, NULL);
-	kcb->kprobe_status = status;
 }
 
 void __kprobes arch_disarm_kprobe(struct kprobe *p)
 {
-	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-	unsigned long status = kcb->kprobe_status;
 	struct ins_replace_args args;
 
 	args.ptr = p->addr;
 	args.old = BREAKPOINT_INSTRUCTION;
 	args.new = p->opcode;
-
-	kcb->kprobe_status = KPROBE_SWAP_INST;
 	stop_machine(swap_instruction, &args, NULL);
-	kcb->kprobe_status = status;
 }
 
 void __kprobes arch_remove_kprobe(struct kprobe *p)
@@ -239,7 +213,7 @@ static void __kprobes prepare_singlestep(struct kprobe *p, struct pt_regs *regs)
 	/* Set the PER control regs, turns on single step for this address */
 	__ctl_load(kprobe_per_regs, 9, 11);
 	regs->psw.mask |= PSW_MASK_PER;
-	regs->psw.mask &= ~(PSW_MASK_IO | PSW_MASK_EXT | PSW_MASK_MCHECK);
+	regs->psw.mask &= ~(PSW_MASK_IO | PSW_MASK_EXT);
 }
 
 static void __kprobes save_previous_kprobe(struct kprobe_ctlblk *kcb)
@@ -266,7 +240,7 @@ static void __kprobes set_current_kprobe(struct kprobe *p, struct pt_regs *regs,
 	__get_cpu_var(current_kprobe) = p;
 	/* Save the interrupt and per flags */
 	kcb->kprobe_saved_imask = regs->psw.mask &
-	    (PSW_MASK_PER | PSW_MASK_IO | PSW_MASK_EXT | PSW_MASK_MCHECK);
+		(PSW_MASK_PER | PSW_MASK_IO | PSW_MASK_EXT);
 	/* Save the control regs that govern PER */
 	__ctl_store(kcb->kprobe_saved_ctl, 9, 11);
 }
@@ -375,6 +349,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 	struct hlist_node *node, *tmp;
 	unsigned long flags, orig_ret_address = 0;
 	unsigned long trampoline_address = (unsigned long)&kretprobe_trampoline;
+	kprobe_opcode_t *correct_ret_addr = NULL;
 
 	INIT_HLIST_HEAD(&empty_rp);
 	kretprobe_hash_lock(current, &head, &flags);
@@ -397,10 +372,32 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 			/* another task is sharing our hash bucket */
 			continue;
 
-		if (ri->rp && ri->rp->handler)
-			ri->rp->handler(ri, regs);
+		orig_ret_address = (unsigned long)ri->ret_addr;
+
+		if (orig_ret_address != trampoline_address)
+			/*
+			 * This is the real return address. Any other
+			 * instances associated with this task are for
+			 * other calls deeper on the call stack
+			 */
+			break;
+	}
+
+	kretprobe_assert(ri, orig_ret_address, trampoline_address);
+
+	correct_ret_addr = ri->ret_addr;
+	hlist_for_each_entry_safe(ri, node, tmp, head, hlist) {
+		if (ri->task != current)
+			/* another task is sharing our hash bucket */
+			continue;
 
 		orig_ret_address = (unsigned long)ri->ret_addr;
+
+		if (ri->rp && ri->rp->handler) {
+			ri->ret_addr = correct_ret_addr;
+			ri->rp->handler(ri, regs);
+		}
+
 		recycle_rp_inst(ri, &empty_rp);
 
 		if (orig_ret_address != trampoline_address) {
@@ -412,7 +409,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 			break;
 		}
 	}
-	kretprobe_assert(ri, orig_ret_address, trampoline_address);
+
 	regs->psw.addr = orig_ret_address | PSW_ADDR_AMODE;
 
 	reset_current_kprobe();
@@ -505,7 +502,7 @@ out:
 	return 1;
 }
 
-int __kprobes kprobe_fault_handler(struct pt_regs *regs, int trapnr)
+static int __kprobes kprobe_trap_handler(struct pt_regs *regs, int trapnr)
 {
 	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
@@ -529,8 +526,9 @@ int __kprobes kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 		regs->psw.mask |= kcb->kprobe_saved_imask;
 		if (kcb->kprobe_status == KPROBE_REENTER)
 			restore_previous_kprobe(kcb);
-		else
+		else {
 			reset_current_kprobe();
+		}
 		preempt_enable_no_resched();
 		break;
 	case KPROBE_HIT_ACTIVE:
@@ -573,6 +571,18 @@ int __kprobes kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 	return 0;
 }
 
+int __kprobes kprobe_fault_handler(struct pt_regs *regs, int trapnr)
+{
+	int ret;
+
+	if (regs->psw.mask & (PSW_MASK_IO | PSW_MASK_EXT))
+		local_irq_disable();
+	ret = kprobe_trap_handler(regs, trapnr);
+	if (regs->psw.mask & (PSW_MASK_IO | PSW_MASK_EXT))
+		local_irq_restore(regs->psw.mask & ~PSW_MASK_PER);
+	return ret;
+}
+
 /*
  * Wrapper routine to for handling exceptions.
  */
@@ -580,7 +590,11 @@ int __kprobes kprobe_exceptions_notify(struct notifier_block *self,
 				       unsigned long val, void *data)
 {
 	struct die_args *args = (struct die_args *)data;
+	struct pt_regs *regs = args->regs;
 	int ret = NOTIFY_DONE;
+
+	if (regs->psw.mask & (PSW_MASK_IO | PSW_MASK_EXT))
+		local_irq_disable();
 
 	switch (val) {
 	case DIE_BPT:
@@ -592,16 +606,17 @@ int __kprobes kprobe_exceptions_notify(struct notifier_block *self,
 			ret = NOTIFY_STOP;
 		break;
 	case DIE_TRAP:
-		/* kprobe_running() needs smp_processor_id() */
-		preempt_disable();
-		if (kprobe_running() &&
-		    kprobe_fault_handler(args->regs, args->trapnr))
+		if (!preemptible() && kprobe_running() &&
+		    kprobe_trap_handler(args->regs, args->trapnr))
 			ret = NOTIFY_STOP;
-		preempt_enable();
 		break;
 	default:
 		break;
 	}
+
+	if (regs->psw.mask & (PSW_MASK_IO | PSW_MASK_EXT))
+		local_irq_restore(regs->psw.mask & ~PSW_MASK_PER);
+
 	return ret;
 }
 
@@ -615,6 +630,7 @@ int __kprobes setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
 
 	/* setup return addr to the jprobe handler routine */
 	regs->psw.addr = (unsigned long)(jp->entry) | PSW_ADDR_AMODE;
+	regs->psw.mask &= ~(PSW_MASK_IO | PSW_MASK_EXT);
 
 	/* r14 is the function return address */
 	kcb->jprobe_saved_r14 = (unsigned long)regs->gprs[14];
