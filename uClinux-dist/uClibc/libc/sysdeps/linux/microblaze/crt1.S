@@ -13,14 +13,16 @@
  * Written by Miles Bader <miles@gnu.org>
  */
 
-#include <asm/clinkage.h>
+#include <libc-symbols.h>
 
 /* Upon entry, the stack contains the following data:
 	argc, argv[0], ..., argv[argc-1], 0, envp[0], ..., 0
 */
 
 	.text
-C_ENTRY(_start):
+	.globl C_SYMBOL_NAME(_start)
+	.align 4
+C_SYMBOL_NAME(_start):
 	
 	/* Load SDAs */
 	la	r2, r0, C_SYMBOL_NAME(_SDA2_BASE_) /* in the original source r2 was SDA, and r13 was SDA2, no idea why */

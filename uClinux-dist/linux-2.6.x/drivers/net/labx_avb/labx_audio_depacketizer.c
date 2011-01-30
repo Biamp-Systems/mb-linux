@@ -23,16 +23,16 @@
  *
  */
 
-#include <linux/autoconf.h>
 #include "labx_audio_depacketizer.h"
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 #include <xio.h>
 
 #ifdef CONFIG_OF
-#include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
 #endif // CONFIG_OF
 
 
@@ -728,11 +728,11 @@ static int audio_depacketizer_release(struct inode *inode, struct file *filp)
 static uint32_t configWords[MAX_CONFIG_WORDS];
 
 /* I/O control operations for the driver */
-static int audio_depacketizer_ioctl(struct inode *inode, struct file *filp,
-                                    unsigned int command, unsigned long arg)
+static long audio_depacketizer_ioctl(struct file *filp,
+                                     unsigned int command, unsigned long arg)
 {
   struct audio_depacketizer *depacketizer = (struct audio_depacketizer*)filp->private_data;
-  int returnValue = 0;
+  long returnValue = 0;
 
   // Switch on the request
   switch(command) {
@@ -863,10 +863,10 @@ static int audio_depacketizer_ioctl(struct inode *inode, struct file *filp,
 
 /* Character device file operations structure */
 static struct file_operations audio_depacketizer_fops = {
-  .open	   = audio_depacketizer_open,
-  .release = audio_depacketizer_release,
-  .ioctl   = audio_depacketizer_ioctl,
-  .owner   = THIS_MODULE,
+  .open	          = audio_depacketizer_open,
+  .release        = audio_depacketizer_release,
+  .unlocked_ioctl = audio_depacketizer_ioctl,
+  .owner          = THIS_MODULE,
 };
 
 /* Function containing the "meat" of the probe mechanism - this is used by
@@ -1069,7 +1069,7 @@ static int audio_depacketizer_probe(const char *name,
 #ifdef CONFIG_OF
 static int audio_depacketizer_platform_remove(struct platform_device *pdev);
 
-static int __devinit audio_depacketizer_of_probe(struct of_device *ofdev, const struct of_device_id *match)
+static int __devinit audio_depacketizer_of_probe(struct platform_device *ofdev, const struct of_device_id *match)
 {
   struct resource r_mem_struct;
   struct resource r_irq_struct;
@@ -1081,19 +1081,19 @@ static int __devinit audio_depacketizer_of_probe(struct of_device *ofdev, const 
   int rc;
 
   /* Obtain the resources for this instance */
-  rc = of_address_to_resource(ofdev->node,0,addressRange);
+  rc = of_address_to_resource(ofdev->dev.of_node,0,addressRange);
   if (rc) {
     dev_warn(&ofdev->dev,"invalid address\n");
     return rc;
   }
 
-  rc = of_irq_to_resource(ofdev->node, 0, irq);
+  rc = of_irq_to_resource(ofdev->dev.of_node, 0, irq);
   if(rc == NO_IRQ) {
     /* No IRQ was defined; null the resource pointer to indicate polled mode */
     irq = NULL;
   }
 
-  interfaceType = (char *) of_get_property(ofdev->node, "xlnx,interface-type", NULL);
+  interfaceType = (char *) of_get_property(ofdev->dev.of_node, "xlnx,interface-type", NULL);
   if(interfaceType == NULL) {
     dev_warn(&ofdev->dev, "No interface type specified in device tree\n");
     return(-EFAULT);
@@ -1103,7 +1103,7 @@ static int __devinit audio_depacketizer_of_probe(struct of_device *ofdev, const 
   return(audio_depacketizer_probe(name, pdev, addressRange, irq, interfaceType));
 }
 
-static int __devexit audio_depacketizer_of_remove(struct of_device *dev)
+static int __devexit audio_depacketizer_of_remove(struct platform_device *dev)
 {
 	struct platform_device *pdev = to_platform_device(&dev->dev);
 	audio_depacketizer_platform_remove(pdev);
@@ -1119,8 +1119,11 @@ static struct of_device_id audio_depacketizer_of_match[] = {
 MODULE_DEVICE_TABLE(of, audio_depacketizer_of_match);
 
 static struct of_platform_driver of_audio_depacketizer_driver = {
-	.name		= DRIVER_NAME,
-	.match_table	= audio_depacketizer_of_match,
+	.driver = {
+		.name		= DRIVER_NAME,
+		.owner		= THIS_MODULE,
+		.of_match_table	= audio_depacketizer_of_match,
+	},
 	.probe		= audio_depacketizer_of_probe,
 	.remove		= __devexit_p(audio_depacketizer_of_remove),
 };

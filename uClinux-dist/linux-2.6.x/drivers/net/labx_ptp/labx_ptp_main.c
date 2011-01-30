@@ -29,6 +29,7 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/netdevice.h>
+#include <linux/slab.h>
 #include <xio.h>
 
 /* Enable this to get some extra link debug messages */
@@ -40,8 +41,8 @@
 #endif
 
 #ifdef CONFIG_OF
-#include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
 #endif // CONFIG_OF
 
 /* Driver name and the revision of hardware expected. */
@@ -185,7 +186,7 @@ static int ptp_device_event(struct notifier_block *nb, unsigned long event, void
 
   for (i=0; i<ptp->numPorts; i++) {
 #ifdef CONFIG_OF
-    struct of_device* interfaceDev = of_find_device_by_node(ptp->ports[i].interfaceNode);
+    struct platform_device* interfaceDev = of_find_device_by_node(ptp->ports[i].interfaceNode);
     struct device* matchDev = &dev->dev;
     int match = 0;
 
@@ -307,8 +308,8 @@ static void PopulateDataSet(struct ptp_device *ptp, uint32_t port, PtpAsPortData
 }
 
 /* I/O control operations for the driver */
-static int ptp_device_ioctl(struct inode *inode, struct file *filp,
-                            unsigned int command, unsigned long arg)
+static long ptp_device_ioctl(struct file *filp,
+                             unsigned int command, unsigned long arg)
 {
   // Switch on the request
   struct ptp_device *ptp = (struct ptp_device*) filp->private_data;
@@ -520,10 +521,10 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
 
 /* Character device file operations structure */
 static struct file_operations ptp_device_fops = {
-  .open	   = ptp_device_open,
-  .release = ptp_device_release,
-  .ioctl   = ptp_device_ioctl,
-  .owner   = THIS_MODULE,
+  .open	          = ptp_device_open,
+  .release        = ptp_device_release,
+  .unlocked_ioctl = ptp_device_ioctl,
+  .owner          = THIS_MODULE,
 };
 
 /* Common, factored-out function which provides the "meat" of the probe
@@ -756,8 +757,8 @@ static int ptp_probe(const char *name,
 #ifdef CONFIG_OF
 static int ptp_remove(struct platform_device *pdev);
 
-static u32 get_u32(struct of_device *ofdev, const char *s) {
-	u32 *p = (u32 *)of_get_property(ofdev->node, s, NULL);
+static u32 get_u32(struct platform_device *ofdev, const char *s) {
+	u32 *p = (u32 *)of_get_property(ofdev->dev.of_node, s, NULL);
 	if(p) {
 		return *p;
 	} else {
@@ -765,7 +766,7 @@ static u32 get_u32(struct of_device *ofdev, const char *s) {
 		return 0;
 	}
 }
-static int __devinit ptp_of_probe(struct of_device *ofdev, const struct of_device_id *match)
+static int __devinit ptp_of_probe(struct platform_device *ofdev, const struct of_device_id *match)
 {
   struct resource r_mem_struct;
   struct resource *addressRange = &r_mem_struct;
@@ -778,14 +779,14 @@ static int __devinit ptp_of_probe(struct of_device *ofdev, const struct of_devic
   int i;
 
   /* Obtain the resources for this instance */
-  rc = of_address_to_resource(ofdev->node, 0, addressRange);
+  rc = of_address_to_resource(ofdev->dev.of_node, 0, addressRange);
   if (rc) {
 	  dev_warn(&ofdev->dev,"invalid address\n");
 	  return rc;
   }
 
   /* Get IRQ for the device */
-  rc = of_irq_to_resource(ofdev->node, 0, irq);
+  rc = of_irq_to_resource(ofdev->dev.of_node, 0, irq);
   if(rc == NO_IRQ) {
     dev_warn(&ofdev->dev, "no IRQ found.\n");
     return rc;
@@ -819,7 +820,7 @@ static int __devinit ptp_of_probe(struct of_device *ofdev, const struct of_devic
     struct device_node *interface_node = NULL;
     snprintf(propName, 64, "port-interface-%d", i);
 
-    interface_handle = of_get_property(ofdev->node, propName, NULL);
+    interface_handle = of_get_property(ofdev->dev.of_node, propName, NULL);
     if (!interface_handle) {
       dev_warn(&ofdev->dev, "no PTP ethernet connection specified for port %d.\n", i+1);
     } else {
@@ -835,7 +836,7 @@ static int __devinit ptp_of_probe(struct of_device *ofdev, const struct of_devic
   return(ptp_probe(name, pdev, addressRange, irq, &platformData));
 }
 
-static int __devexit ptp_of_remove(struct of_device *dev)
+static int __devexit ptp_of_remove(struct platform_device *dev)
 {
 	struct platform_device *pdev = to_platform_device(&dev->dev);
 	ptp_remove(pdev);
@@ -851,8 +852,11 @@ static struct of_device_id ptp_of_match[] = {
 MODULE_DEVICE_TABLE(of, ptp_of_match);
 
 static struct of_platform_driver of_ptp_driver = {
-	.name		= DRIVER_NAME,
-	.match_table	= ptp_of_match,
+	.driver = {
+		.name		= DRIVER_NAME,
+		.owner		= THIS_MODULE,
+		.of_match_table	= ptp_of_match,
+	},
 	.probe		= ptp_of_probe,
 	.remove		= __devexit_p(ptp_of_remove),
 };

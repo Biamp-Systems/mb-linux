@@ -21,3 +21,4 @@ lib-y += muldi3.o
 lib-y += mulsi3.o
 lib-y += udivsi3.o
 lib-y += umodsi3.o
+lib-y += udivdi3.o

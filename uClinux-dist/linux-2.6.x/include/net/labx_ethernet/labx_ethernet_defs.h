@@ -68,7 +68,7 @@ struct labx_ll_eth_platform_data {
    */
   uint8_t phy_type;
   uint8_t phy_addr;
-  char phy_name[BUS_ID_SIZE];
+  char phy_name[20];
 
   /* MDIO bus parameters.
    * phy_mask is a bitmask of MDIO addresses to probe (1's get probed)
@@ -103,7 +103,7 @@ struct labx_eth_platform_data {
    */
   uint8_t phy_type;
   uint8_t phy_addr;
-  char phy_name[BUS_ID_SIZE];
+  char phy_name[20];
 
   /* MDIO bus parameters.
    * phy_mask is a bitmask of MDIO addresses to probe (1's get probed)

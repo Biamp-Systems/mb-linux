@@ -405,10 +405,6 @@ ifeq ($(TARGET_ARCH),i960)
       SYMBOL_PREFIX=_
 endif
 
-ifeq ($(TARGET_ARCH),microblaze)
-      SYMBOL_PREFIX=_
-endif
-
 ifeq ($(TARGET_ARCH),v850)
       SYMBOL_PREFIX=_
 endif

@@ -23,7 +23,6 @@
  *
  */
 
-#include <linux/autoconf.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <asm/uaccess.h>
@@ -43,8 +42,9 @@
 #include <linux/mm.h>
 
 #ifdef CONFIG_OF
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
 #endif // CONFIG_OF
 
 
@@ -76,11 +76,11 @@ static int labx_local_audio_open(struct inode *inode, struct file *filp)
   return 0;
 }
 
-static int labx_local_audio_ioctl_cdev(struct inode *inode, struct file *filp,
-				       unsigned int command, unsigned long arg)
+static long labx_local_audio_ioctl_cdev(struct file *filp,
+					unsigned int command, unsigned long arg)
 {
   struct labx_local_audio_pdev *local_audio_pdev = (struct labx_local_audio_pdev*)filp->private_data;
-  int returnValue;
+  long returnValue;
 
   switch(command) {
   case IOC_LA_SET_CHANNEL_MAPPING:
@@ -170,8 +170,8 @@ static int labx_local_audio_ioctl_cdev(struct inode *inode, struct file *filp,
     returnValue = labx_dma_ioctl(&local_audio_pdev->dma, command, arg);
     if((returnValue == -EINVAL) &&
        (local_audio_pdev->derivedFops != NULL) && 
-       (local_audio_pdev->derivedFops->ioctl != NULL)) {
-      returnValue = local_audio_pdev->derivedFops->ioctl(inode, filp, command, arg);
+       (local_audio_pdev->derivedFops->unlocked_ioctl != NULL)) {
+      returnValue = local_audio_pdev->derivedFops->unlocked_ioctl(filp, command, arg);
     }
     return(returnValue);
   }
@@ -182,7 +182,7 @@ static int labx_local_audio_ioctl_cdev(struct inode *inode, struct file *filp,
 
 static const struct file_operations labx_local_audio_fops = {
   .open = labx_local_audio_open,
-  .ioctl = labx_local_audio_ioctl_cdev,
+  .unlocked_ioctl = labx_local_audio_ioctl_cdev,
 };
 
 /* Function containing the "meat" of the probe mechanism - this is used by
@@ -276,8 +276,8 @@ int labx_local_audio_probe(const char *name,
 
 /* OpenFirmware support section */
 #ifdef CONFIG_OF
-static u32 get_u32(struct of_device *ofdev, const char *s) {
-  u32 *p = (u32 *)of_get_property(ofdev->node, s, NULL);
+static u32 get_u32(struct platform_device *ofdev, const char *s) {
+  u32 *p = (u32 *)of_get_property(ofdev->dev.of_node, s, NULL);
   if(p) {
     return *p;
   } else {
@@ -286,7 +286,7 @@ static u32 get_u32(struct of_device *ofdev, const char *s) {
   }
 }
 
-static int labx_local_audio_of_probe(struct of_device *ofdev, const struct of_device_id *match)
+static int labx_local_audio_of_probe(struct platform_device *ofdev, const struct of_device_id *match)
 {
   struct resource r_mem_struct;
   struct resource *addressRange = &r_mem_struct;
@@ -295,8 +295,8 @@ static int labx_local_audio_of_probe(struct of_device *ofdev, const struct of_de
   int ret;
 
   /* Obtain the resources for this instance; use the device tree node name */
-  const char *name = ofdev->node->name;
-  ret = of_address_to_resource(ofdev->node, 0, addressRange);
+  const char *name = ofdev->dev.of_node->name;
+  ret = of_address_to_resource(ofdev->dev.of_node, 0, addressRange);
   if (ret) {
     dev_warn(&ofdev->dev, "Invalid address\n");
     return(ret);
@@ -311,7 +311,7 @@ static int labx_local_audio_of_probe(struct of_device *ofdev, const struct of_de
 
 static int __exit labx_local_audio_pdev_remove(struct platform_device *pdev);
 
-static int __devexit labx_local_audio_of_remove(struct of_device *dev)
+static int __devexit labx_local_audio_of_remove(struct platform_device *dev)
 {
   struct platform_device *pdev = to_platform_device(&dev->dev);
   labx_local_audio_pdev_remove(pdev);
@@ -324,8 +324,11 @@ static struct of_device_id labx_local_audio_of_match[] = {
 };
 
 static struct of_platform_driver labx_local_audio_of_driver = {
-  .name        = DRIVER_NAME,
-  .match_table = labx_local_audio_of_match,
+  .driver = {
+    .name           = DRIVER_NAME,
+    .owner          = THIS_MODULE,
+    .of_match_table = labx_local_audio_of_match,
+  },
   .probe       = labx_local_audio_of_probe,
   .remove      = __devexit_p(labx_local_audio_of_remove),
 };

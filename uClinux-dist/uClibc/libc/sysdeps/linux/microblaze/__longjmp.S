@@ -16,11 +16,13 @@
 #define _ASM
 #include <bits/setjmp.h>
 
-#include <asm/clinkage.h>
+#include <libc-symbols.h>
 
 	.text
-C_ENTRY(__longjmp):
-	/* load registers from memory to r5 (arg0)*/
+	.globl C_SYMBOL_NAME(__longjmp)
+	.align 4
+C_SYMBOL_NAME(__longjmp):
+	/* load registers from memory to r5 (arg0) */
 	lwi	r1, r5, 0
 	lwi	r15, r5, 4
 	lwi	r2,  r5, 8
@@ -40,9 +42,8 @@ C_ENTRY(__longjmp):
 	lwi	r30, r5, 64
 	lwi	r31, r5, 68
 	
-	addi	r3, r0, 1		// return val
-	rtsd	r15, 8			// normal return
+	addi	r3, r0, 1		/* return val */
+	rtsd	r15, 8			/* normal return */
 	nop
 
-C_END(__longjmp)
 libc_hidden_def(__longjmp)

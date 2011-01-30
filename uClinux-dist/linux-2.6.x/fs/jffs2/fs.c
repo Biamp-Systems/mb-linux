@@ -566,7 +566,7 @@ int jffs2_do_fill_super(struct super_block *sb, void *data, int silent)
 	if (!sb->s_root)
 		goto out_root_i;
 
-	sb->s_maxbytes = 0xFFFFFFFF;
+	sb->s_maxbytes = MAX_NON_LFS;
 	sb->s_blocksize = PAGE_CACHE_SIZE;
 	sb->s_blocksize_bits = PAGE_CACHE_SHIFT;
 	sb->s_magic = JFFS2_SUPER_MAGIC;

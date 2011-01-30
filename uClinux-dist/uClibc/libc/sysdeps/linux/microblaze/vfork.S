@@ -18,7 +18,7 @@
 #define _SYSCALL_H
 #include <bits/sysnum.h>
 
-#include <asm/clinkage.h>
+#include <libc-symbols.h>
 
 /* Clone the calling process, but without copying the whole address space.
    The calling process is suspended until the new process exits or is
@@ -27,7 +27,9 @@
 
 .global C_SYMBOL_NAME(errno)
 
-C_ENTRY (__vfork):
+	.globl C_SYMBOL_NAME(__vfork)
+	.align 4
+C_SYMBOL_NAME(__vfork):
 	addi	r12, r0, __NR_vfork
 	brki	r14, 0x08;
 	addi	r4, r3, 125		/* minimum err value */
@@ -38,6 +40,6 @@ C_ENTRY (__vfork):
 	swi	r3, r0, C_SYMBOL_NAME(errno);
 	rtsd	r15, 8			/* error return */
 	nop
-C_END(__vfork)
+
 weak_alias(__vfork,vfork)
 libc_hidden_weak(vfork)

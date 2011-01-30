@@ -16,17 +16,18 @@
 #define _ASM
 #include <bits/setjmp.h>
 
-#include <asm/clinkage.h>
+#include <libc-symbols.h>
 
 	.text
-C_ENTRY(setjmp):
-	addi	r6, r0, 1			/* Save the signal mask.  */
+	.globl C_SYMBOL_NAME(setjmp)
+	.align 4
+C_SYMBOL_NAME(setjmp):
 	braid	C_SYMBOL_NAME(__sigsetjmp)
-	nop
+	addi	r6, r0, 1			/* Save the signal mask.  */
 
 	.globl C_SYMBOL_NAME(_setjmp)
 C_SYMBOL_NAME(_setjmp):
-	add	r6, r0, r0			/* Don't save the signal mask.  */
+	and	r6, r0, r0			/* Don't save the signal mask.  */
 
 	.globl C_SYMBOL_NAME(__sigsetjmp)
 C_SYMBOL_NAME(__sigsetjmp):
@@ -53,4 +54,3 @@ C_SYMBOL_NAME(__sigsetjmp):
 	/* Make a tail call to __sigjmp_save; it takes the same args.  */
 	braid	C_SYMBOL_NAME(__sigjmp_save)
 	nop
-C_END(setjmp)

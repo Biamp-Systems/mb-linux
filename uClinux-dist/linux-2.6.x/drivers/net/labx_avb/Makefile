@@ -3,7 +3,7 @@
 #
 
 # Include Xilinx common definitions
-EXTRA_CFLAGS += -I$(TOPDIR)/drivers/xilinx_common
+EXTRA_CFLAGS += -I$(srctree)/drivers/xilinx_common
 
 obj-$(CONFIG_LABX_AUDIO_PACKETIZER)       += labx_audio_packetizer.o
 obj-$(CONFIG_LABX_AUDIO_DEPACKETIZER)     += labx_audio_depacketizer.o

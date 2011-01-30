@@ -23,7 +23,6 @@
  *
  */
 
-#include <linux/autoconf.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
@@ -39,8 +38,8 @@
 #include <xio.h>
 
 #ifdef CONFIG_OF
-#include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
 #endif // CONFIG_OF
 
 
@@ -66,8 +65,7 @@ static int labx_dma_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static int labx_dma_ioctl_cdev(struct inode *inode, struct file *filp,
-                                    unsigned int command, unsigned long arg)
+static long labx_dma_ioctl_cdev(struct file *filp, unsigned int command, unsigned long arg)
 {
 	struct labx_dma_pdev *dma_pdev = (struct labx_dma_pdev*)filp->private_data;
 
@@ -76,11 +74,11 @@ static int labx_dma_ioctl_cdev(struct inode *inode, struct file *filp,
 
 static const struct file_operations labx_dma_fops = {
 	.open = labx_dma_open,
-	.ioctl = labx_dma_ioctl_cdev,
+	.unlocked_ioctl = labx_dma_ioctl_cdev,
 };
 
 #ifdef CONFIG_OF
-static int labx_dma_of_probe(struct of_device *ofdev, const struct of_device_id *match)
+static int labx_dma_of_probe(struct platform_device *ofdev, const struct of_device_id *match)
 {
 	struct resource r_mem_struct;
 	struct resource *addressRange = &r_mem_struct;
@@ -89,9 +87,9 @@ static int labx_dma_of_probe(struct of_device *ofdev, const struct of_device_id 
 	int i;
   	struct platform_device *pdev = to_platform_device(&ofdev->dev);
 
-  	printk(KERN_INFO "Device Tree Probing \'%s\' %d (%s)\n", ofdev->node->name, pdev->id, ofdev->node->full_name);
+  	printk(KERN_INFO "Device Tree Probing \'%s\' %d (%s)\n", ofdev->dev.of_node->name, pdev->id, ofdev->dev.of_node->full_name);
 	/* Obtain the resources for this instance */
-	ret = of_address_to_resource(ofdev->node, 0, addressRange);
+	ret = of_address_to_resource(ofdev->dev.of_node, 0, addressRange);
 	if (ret) {
 		dev_warn(&ofdev->dev, "invalid address\n");
 		return ret;
@@ -104,7 +102,7 @@ static int labx_dma_of_probe(struct of_device *ofdev, const struct of_device_id 
 	/* Request and map the device's I/O memory region into uncacheable space */
 	dma_pdev->physicalAddress = addressRange->start;
 	dma_pdev->addressRangeSize = ((addressRange->end - addressRange->start) + 1);
-	snprintf(dma_pdev->name, NAME_MAX_SIZE, "%s%d", ofdev->node->name, pdev->id);
+	snprintf(dma_pdev->name, NAME_MAX_SIZE, "%s%d", ofdev->dev.of_node->name, pdev->id);
 	dma_pdev->name[NAME_MAX_SIZE - 1] = '\0';
 	if(request_mem_region(dma_pdev->physicalAddress, dma_pdev->addressRangeSize,
 			dma_pdev->name) == NULL) {
@@ -157,7 +155,7 @@ free:
 
 static int __exit labx_dma_pdev_remove(struct platform_device *pdev);
 
-static int __devexit labx_dma_of_remove(struct of_device *dev)
+static int __devexit labx_dma_of_remove(struct platform_device *dev)
 {
 	struct platform_device *pdev = to_platform_device(&dev->dev);
 	labx_dma_pdev_remove(pdev);
@@ -170,8 +168,11 @@ static struct of_device_id labx_dma_of_match[] = {
 };
 
 static struct of_platform_driver labx_dma_of_driver = {
-	.name		= DRIVER_NAME,
-	.match_table	= labx_dma_of_match,
+	.driver = {
+		.name		= DRIVER_NAME,
+		.owner		= THIS_MODULE,
+		.of_match_table	= labx_dma_of_match,
+	},
 	.probe		= labx_dma_of_probe,
 	.remove		= __devexit_p(labx_dma_of_remove),
 };

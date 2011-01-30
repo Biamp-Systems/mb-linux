@@ -3,7 +3,7 @@
 #
 
 # Include Xilinx common definitions
-EXTRA_CFLAGS += -I$(TOPDIR)/drivers/xilinx_common
+EXTRA_CFLAGS += -I$(srctree)/drivers/xilinx_common
 
 # Define a multi-part driver
 obj-$(CONFIG_LABX_PTP) += labx_ptp.o

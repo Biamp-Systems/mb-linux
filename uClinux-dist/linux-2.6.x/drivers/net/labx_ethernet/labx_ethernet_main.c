@@ -11,7 +11,7 @@
  * MODIFICATION HISTORY:
  *
  * Ver   Who  Date     Changes
- * ----- software/linux-2.6.x-petalogix/---- software/linux-2.6.x-petalogix/-------- software/linux-2.6.x-petalogix/-------------------------------------------------------
+ * ------------------------------------------------------------------------
  * 1.00a jvb  05/08/05 First release
  * </pre>
  *
@@ -36,6 +36,7 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/xilinx_devices.h>
+#include <linux/platform_device.h>
 #include <asm/io.h>
 #include <linux/ethtool.h>
 #include <linux/vmalloc.h>
@@ -43,8 +44,8 @@
 
 #ifdef CONFIG_OF
 // For open firmware.
-#include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
 #endif
 
 #include "xbasic_types.h"
@@ -226,7 +227,6 @@ static void labx_eth_mac_adjust_link(struct net_device *dev);
 /* for exclusion of all program flows (processes, ISRs and BHs) */
 static spinlock_t XTE_spinlock = SPIN_LOCK_UNLOCKED;
 static spinlock_t XTE_tx_spinlock = SPIN_LOCK_UNLOCKED;
-static spinlock_t XTE_rx_spinlock = SPIN_LOCK_UNLOCKED;
 
 /* Helper function to determine if a given XLlTemac error warrants a reset. */
 extern inline int status_requires_reset(int s)
@@ -807,7 +807,7 @@ static void xenet_set_multicast_list(struct net_device *dev)
 
   u32 Options = labx_eth_GetOptions(&lp->Emac);
 
-  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || dev->mc_count > 6)
+  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > 6)
     {
       dev->flags |= IFF_PROMISC;
       Options |= XTE_PROMISC_OPTION;
@@ -822,7 +822,7 @@ static void xenet_set_multicast_list(struct net_device *dev)
   (int) _labx_eth_SetOptions(&lp->Emac, Options);
   (int) _labx_eth_ClearOptions(&lp->Emac, ~Options);
 
-  if (dev->mc_count > 0 && dev->mc_count <= 6)
+  if (netdev_mc_count(dev) > 0 && netdev_mc_count(dev) <= 6)
     {
       // TODO: Program multicast filters
     }
@@ -1590,9 +1590,6 @@ static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
   struct net_local *lp = netdev_priv(dev);
 
-  /* gmii_ioctl_data has 4 u16 fields: phy_id, reg_num, val_in & val_out */
-  struct mii_ioctl_data *data = (struct mii_ioctl_data *) &rq->ifr_data;
-
   switch (cmd) {
   case SIOCGMIIPHY:	/* Get address of GMII PHY in use. */
   case SIOCGMIIREG:	/* Read GMII PHY register. */
@@ -1601,7 +1598,7 @@ static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
       return -ENODEV;
     }
 
-    return phy_mii_ioctl(lp->phy_dev, data, cmd);
+    return phy_mii_ioctl(lp->phy_dev, rq, cmd);
 
   case SIOCDEVPRIVATE + 3:	/* set THRESHOLD */
   case SIOCDEVPRIVATE + 4:	/* set WAITBOUND */
@@ -1615,6 +1612,18 @@ static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
   }
 }
 
+static const struct net_device_ops labx_net_device_ops = {
+  .ndo_open               = xenet_open,
+  .ndo_stop               = xenet_close,
+  .ndo_start_xmit         = xenet_FifoSend,
+  .ndo_set_multicast_list = xenet_set_multicast_list,
+  .ndo_set_mac_address    = xenet_set_mac_address,
+  .ndo_do_ioctl           = xenet_ioctl,
+  .ndo_change_mtu         = xenet_change_mtu,
+  .ndo_tx_timeout         = xenet_tx_timeout,
+  .ndo_get_stats          = xenet_get_stats,
+};
+
 
 /******************************************************************************
  *
@@ -1625,9 +1634,7 @@ static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 static void xtenet_remove_ndev(struct net_device *ndev)
 {
   if (ndev) {
-    struct net_local *lp = netdev_priv(ndev);
-
-    iounmap((void *) (lp->Emac.Config.BaseAddress));
+    iounmap((void *) (netdev_priv(ndev)->Emac.Config.BaseAddress));
     free_netdev(ndev);
   }
 }
@@ -1791,19 +1798,11 @@ static int xtenet_setup(struct device *dev,
   /* Assign the FIFO transmit callback */
   Write_Fifo32(lp->Emac, FIFO_TDFR_OFFSET, FIFO_RESET_MAGIC);
   Write_Fifo32(lp->Emac, FIFO_RDFR_OFFSET, FIFO_RESET_MAGIC);
-  ndev->hard_start_xmit = xenet_FifoSend;
 
   /* initialize the netdev structure */
-  ndev->open = xenet_open;
-  ndev->stop = xenet_close;
-  ndev->change_mtu = xenet_change_mtu;
-  ndev->get_stats = xenet_get_stats;
-  ndev->set_multicast_list = xenet_set_multicast_list;
-  ndev->set_mac_address = xenet_set_mac_address;
   ndev->flags &= ~IFF_MULTICAST;
-  ndev->do_ioctl = xenet_ioctl;
-  ndev->tx_timeout = xenet_tx_timeout;
   ndev->watchdog_timeo = TX_TIMEOUT;
+  ndev->netdev_ops = &labx_net_device_ops;
   ndev->ethtool_ops = &labx_ethtool_ops;
 
   /* init the stats */
@@ -1914,8 +1913,8 @@ static struct device_driver xtenet_driver = {
 };
 
 #ifdef CONFIG_OF
-static u32 get_u32(struct of_device *ofdev, const char *s) {
-  u32 *p = (u32 *)of_get_property(ofdev->node, s, NULL);
+static u32 get_u32(struct platform_device *ofdev, const char *s) {
+  u32 *p = (u32 *)of_get_property(ofdev->dev.of_node, s, NULL);
   if(p) {
     return *p;
   } else {
@@ -1927,7 +1926,7 @@ static u32 get_u32(struct of_device *ofdev, const char *s) {
 /* Note: This must be <= MII_BUS_ID_SIZE which is currently 17 (including trailing '\0') */
 #define MDIO_OF_BUSNAME_FMT "labxeth%08x"
 
-static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_device_id *match)
+static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct of_device_id *match)
 {
   struct resource r_irq_struct;
   struct resource r_irq_fifo_struct;
@@ -1949,10 +1948,10 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
   u32 phy_addr;
   int i;
 
-  printk(KERN_INFO "Device Tree Probing \'%s\'\n",ofdev->node->name);
+  printk(KERN_INFO "Device Tree Probing \'%s\'\n",ofdev->dev.of_node->name);
 
   /* Get iospace for the device */
-  rc = of_address_to_resource(ofdev->node, 0, r_mem);
+  rc = of_address_to_resource(ofdev->dev.of_node, 0, r_mem);
   if(rc) {
     dev_warn(&ofdev->dev, "invalid address\n");
     return rc;
@@ -1961,13 +1960,13 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
   /* Get IRQ for the device; this primary one handles MDIO and *can*
    * also multiplex the PHY IRQ if configured to
    */
-  rc = of_irq_to_resource(ofdev->node, 0, r_irq);
+  rc = of_irq_to_resource(ofdev->dev.of_node, 0, r_irq);
   if(rc == NO_IRQ) {
     r_irq = NULL;
   }
 
   /* Get IRQ for the FIFO logic */
-  rc = of_irq_to_resource(ofdev->node, 1, r_irq_fifo);
+  rc = of_irq_to_resource(ofdev->dev.of_node, 1, r_irq_fifo);
   if(rc == NO_IRQ) {
     dev_err(&ofdev->dev, "labx_ethernet: No FIFO IRQ found.\n");
     r_irq_fifo = NULL;
@@ -1975,7 +1974,7 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
   pdata_struct.fifo_irq = r_irq_fifo->start;
 
   /* Get IRQ of the attached phy (if any) */
-  rc = of_irq_to_resource(ofdev->node, 2, r_irq_phy);
+  rc = of_irq_to_resource(ofdev->dev.of_node, 2, r_irq_phy);
   if(rc == NO_IRQ) {
     r_irq_phy = NULL;
   }
@@ -1988,7 +1987,7 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
   phy_addr              = get_u32(ofdev, "xlnx,phy-addr");
 
   pdata->phy_name[0] = '\0';
-  mdio_controller_handle = of_get_property(ofdev->node, "phy-mdio-controller", NULL);
+  mdio_controller_handle = of_get_property(ofdev->dev.of_node, "phy-mdio-controller", NULL);
   if(!mdio_controller_handle) {
     dev_warn(&ofdev->dev, "no MDIO connection specified.\n");
   } else {
@@ -2000,7 +1999,7 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
        * it is not a compound device.
        */
       rc = of_address_to_resource(mdio_controller_node, 0, &r_connected_mdio_mem_struct);
-      snprintf(pdata->phy_name, BUS_ID_SIZE, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, phy_addr);
+      snprintf(pdata->phy_name, 20, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, phy_addr);
       printk("%s:phy_name: %s\n",__func__, pdata->phy_name);
     }
   }
@@ -2020,7 +2019,7 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
     }
   }
 
-  mac_address = of_get_mac_address(ofdev->node);
+  mac_address = of_get_mac_address(ofdev->dev.of_node);
   if(mac_address) {
     memcpy(pdata_struct.mac_addr, mac_address, 6);
   } else {
@@ -2035,7 +2034,7 @@ static int __devinit xtenet_of_probe(struct of_device *ofdev, const struct of_de
   return rc;
 }
 
-static int __devexit xtenet_of_remove(struct of_device *dev)
+static int __devexit xtenet_of_remove(struct platform_device *dev)
 {
   return xtenet_remove(&dev->dev);
 }
@@ -2048,8 +2047,11 @@ static struct of_device_id xtenet_of_match[] = {
 MODULE_DEVICE_TABLE(of, xtenet_of_match);
 
 static struct of_platform_driver xtenet_of_driver = {
-  .name		= DRIVER_NAME,
-  .match_table	= xtenet_of_match,
+  .driver = {
+    .name		= DRIVER_NAME,
+    .owner		= THIS_MODULE,
+    .of_match_table	= xtenet_of_match,
+  },
   .probe		= xtenet_of_probe,
   .remove		= __devexit_p(xtenet_of_remove),
 };

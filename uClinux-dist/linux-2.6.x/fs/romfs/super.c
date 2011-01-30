@@ -478,7 +478,7 @@ static int romfs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 #endif
 
-	sb->s_maxbytes = 0xFFFFFFFF;
+	sb->s_maxbytes = MAX_NON_LFS;
 	sb->s_magic = ROMFS_MAGIC;
 	sb->s_flags |= MS_RDONLY | MS_NOATIME;
 	sb->s_op = &romfs_super_ops;
