@@ -3115,7 +3115,7 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
 				dev_warn(&ofdev->dev, "MDIO connection node has no ethernet child.\n");
 			} else {
 				rc = of_address_to_resource(mdio_controller_node_eth, 0, &r_connected_mdio_mem_struct);
-				snprintf(pdata->phy_name, BUS_ID_SIZE, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, phy_addr);
+				snprintf(pdata->phy_name, 20, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, phy_addr);
 				printk("%s:phy_name: %s\n",__func__, pdata->phy_name);
 			}
 		}
