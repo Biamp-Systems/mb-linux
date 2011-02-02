@@ -31,8 +31,10 @@ void __irq_entry do_IRQ(struct pt_regs *regs)
 
 	irq_enter();
 	irq = get_irq(regs);
+	WARN_ON(irq == -1U);
+	if (irq == -1U) goto irq_done;
+
 next_irq:
-	BUG_ON(irq == -1U);
 	generic_handle_irq(irq);
 
 	irq = get_irq(regs);
@@ -42,6 +44,7 @@ next_irq:
 		goto next_irq;
 	}
 
+irq_done:
 	irq_exit();
 	set_irq_regs(old_regs);
 	trace_hardirqs_on();
