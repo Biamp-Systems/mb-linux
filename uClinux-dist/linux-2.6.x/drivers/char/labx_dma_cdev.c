@@ -51,12 +51,13 @@ static struct labx_dma_pdev* devices[MAX_DMA_DEVICES] = {};
 static int labx_dma_open(struct inode *inode, struct file *file)
 {
 	int i;
+
 	for (i = 0; i<MAX_DMA_DEVICES; i++)
 	{
-		//printk("lookup %d = %p, %d (looking for %d)\n", i, devices[i], (devices[i]) ? devices[i]->miscdev.minor : -1, iminor(inode));
+      /* printk("lookup %d = %p, %d (looking for %d)\n", i, devices[i], (devices[i]) ? devices[i]->miscdev.minor : -1, iminor(inode));*/
 		if ((devices[i] != NULL) && (devices[i]->miscdev.minor == iminor(inode)))
 		{
-			//printk("labx_dma_open: found %p\n", devices[i]);
+          /* printk("labx_dma_open: found %p\n", devices[i]);*/
 			file->private_data = devices[i];
 			break;
 		}
@@ -137,7 +138,8 @@ static int labx_dma_of_probe(struct platform_device *ofdev, const struct of_devi
 	{
 		if (NULL == devices[i])
 		{
-			//printk(DRIVER_NAME ": Device %d = %p\n", i, dma_pdev);
+          /* printk(DRIVER_NAME ": Device %d = %p\n", i, dma_pdev);*/
+          /* printk(DRIVER_NAME ": Misc minor is %d\n", dma_pdev->miscdev.minor);*/
 			devices[i] = dma_pdev;
 			break;
 		}
