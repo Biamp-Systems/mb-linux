@@ -203,6 +203,7 @@ extern void gpio_free_array(struct gpio *array, size_t num);
  * but more typically is configured entirely from userspace.
  */
 extern int gpio_export(unsigned gpio, bool direction_may_change);
+extern int gpio_export_named(unsigned gpio, bool direction_may_change, char *ioname);
 extern int gpio_export_link(struct device *dev, const char *name,
 			unsigned gpio);
 extern int gpio_sysfs_set_active_low(unsigned gpio, int value);
