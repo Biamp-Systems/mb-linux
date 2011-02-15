@@ -252,8 +252,9 @@ static void xilinx_spi_fill_tx_fifo(struct xilinx_spi *xspi)
 	u8 sr;
 
 	/* Clear the Tx FIFO */
-	spi_regw(xspi, XSPI_CR_OFFSET, spi_regr(xspi, XSPI_CR_OFFSET)
-			| XSPI_CR_TXFIFO_RESET);
+	xspi->write_fn(xspi->read_fn(xspi->regs + XSPI_CR_OFFSET) | XSPI_CR_TXFIFO_RESET,
+			xspi->regs + XSPI_CR_OFFSET);
+
 	/* Fill the Tx FIFO with as many bytes as possible */
 	sr = xspi->read_fn(xspi->regs + XSPI_SR_OFFSET);
 	while ((sr & XSPI_SR_TX_FULL_MASK) == 0 && xspi->remaining_bytes > 0) {
