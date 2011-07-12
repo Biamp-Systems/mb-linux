@@ -29,6 +29,7 @@
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/phy.h>
+#include <linux/mii.h>
 
 #include "xilinx_axienet.h"
 
@@ -36,9 +37,18 @@
 #define TX_BD_NUM	64
 #define RX_BD_NUM	128
 
+/* Must be shorter than length of ethtool_drvinfo.driver field to fit */
+#define DRIVER_NAME		"xaxienet"
+#define DRIVER_DESCRIPTION	"Xilinx Axi Ethernet driver"
+#define DRIVER_VERSION		"1.00a"
+
+#define AXIENET_REGS_N	32
+
 /* Match table for of_platform binding */
 static struct of_device_id axienet_of_match[] __devinitdata = {
 	{ .compatible = "xlnx,axi-ethernet-1.00.a", },
+	{ .compatible = "xlnx,axi-ethernet-1.01.a", },
+	{ .compatible = "xlnx,axi-ethernet-2.01.a", },
 	{},
 };
 
@@ -294,7 +304,7 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 
 	/* Update the interrupt coalesce count */
 	cr = ((cr & ~XAXIDMA_COALESCE_MASK) |
-		(XAXIDMA_DFT_RX_THRESHOLD << XAXIDMA_COALESCE_SHIFT));
+			((lp->coalesce_count_rx) << XAXIDMA_COALESCE_SHIFT));
 
 	/* Update the delay timer count */
 	cr = ((cr & ~XAXIDMA_DELAY_MASK) |
@@ -311,7 +321,7 @@ static int axienet_dma_bd_init(struct net_device *ndev)
 
 	/* Update the interrupt coalesce count */
 	cr = (((cr & ~XAXIDMA_COALESCE_MASK)) |
-		(XAXIDMA_DFT_TX_THRESHOLD << XAXIDMA_COALESCE_SHIFT));
+			((lp->coalesce_count_tx) << XAXIDMA_COALESCE_SHIFT));
 
 	/* Update the delay timer count */
 	cr = (((cr & ~XAXIDMA_DELAY_MASK)) |
@@ -682,7 +692,6 @@ static void axienet_start_xmit_done(struct net_device *ndev)
 		cur_p->app0 = 0;
 		cur_p->app1 = 0;
 		cur_p->app2 = 0;
-		cur_p->app3 = 0;
 		cur_p->app4 = 0;
 		cur_p->status = 0;
 
@@ -776,14 +785,24 @@ static int axienet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	}
 
 	cur_p->cntrl = 0;
-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
-		csum_start_off = skb_transport_offset(skb);
-		csum_index_off = csum_start_off + skb->csum_offset;
 
-		cur_p->app0 |= 1; /* Tx Checksum Enabled */
-		cur_p->app1 = (csum_start_off << 16) | csum_index_off;
-		cur_p->app2 = 0;  /* initial checksum seed */
+
+	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		if (lp->features & XAE_FEATURE_FULL_TX_CSUM)
+			/* Tx Full Checksum Offload Enabled */
+			cur_p->app0 |= 2;
+		else if (lp->features & XAE_FEATURE_PARTIAL_RX_CSUM) {
+			csum_start_off = skb_transport_offset(skb);
+			csum_index_off = csum_start_off + skb->csum_offset;
+			/* Tx Partial Checksum Offload Enabled */
+			cur_p->app0 |= 1;
+			cur_p->app1 = (csum_start_off << 16) | csum_index_off;
+			cur_p->app2 = 0;  /* initial checksum seed */
+		}
+	} else if (skb->ip_summed == CHECKSUM_UNNECESSARY) {
+		cur_p->app0 |= 2; /* Tx Full Checksum Offload Enabled */
 	}
+
 
 	cur_p->cntrl = ((cur_p->cntrl & (~XAXIDMA_BD_CTRL_LENGTH_MASK)) |
 							(skb_headlen(skb)));
@@ -838,6 +857,7 @@ static void axienet_recv(struct net_device *ndev)
 	struct axidma_bd *cur_p;
 	dma_addr_t tail_p;
 	int length;
+	int csumstatus;
 
 	tail_p = lp->rx_bd_p + sizeof(*lp->rx_bd_v) * lp->rx_bd_ci;
 	cur_p = &lp->rx_bd_v[lp->rx_bd_ci];
@@ -858,8 +878,15 @@ static void axienet_recv(struct net_device *ndev)
 		skb->ip_summed = CHECKSUM_NONE;
 
 		/* if we're doing Rx csum offload, set it up */
-		if (((lp->features & XAE_FEATURE_PARTIAL_RX_CSUM) != 0) &&
-			(skb->protocol == __constant_htons(ETH_P_IP)) &&
+		if (lp->features & XAE_FEATURE_FULL_RX_CSUM) {
+			csumstatus = (cur_p->app2 & XAE_FULL_CSUM_STATUS_MASK)
+									>> 3;
+			if ((csumstatus == XAE_IP_TCP_CSUM_VALIDATED) ||
+				(csumstatus == XAE_IP_UDP_CSUM_VALIDATED)) {
+				skb->ip_summed = CHECKSUM_UNNECESSARY;
+			}
+		} else if (((lp->features & XAE_FEATURE_PARTIAL_RX_CSUM) != 0)
+			&& (skb->protocol == __constant_htons(ETH_P_IP)) &&
 			(skb->len > 64)) {
 			skb->csum = be32_to_cpu(cur_p->app3 & 0xFFFF);
 			skb->ip_summed = CHECKSUM_COMPLETE;
@@ -914,29 +941,30 @@ static irqreturn_t axienet_tx_irq(int irq, void *_ndev)
 
 	status = axienet_dma_in32(lp, XAXIDMA_TX_SR_OFFSET);
 
-	if (!(status & XAXIDMA_IRQ_ALL_MASK))
-		dev_err(&ndev->dev, "No interrupts asserted in Tx path");
-
-	if (status & (XAXIDMA_IRQ_DELAY_MASK | XAXIDMA_IRQ_IOC_MASK))
+	if (status & (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK))
 		axienet_start_xmit_done(lp->ndev);
+	else {
+		if (!(status & XAXIDMA_IRQ_ALL_MASK))
+			dev_err(&ndev->dev, "No interrupts asserted in Tx path");
 
-	if (status & XAXIDMA_IRQ_ERROR_MASK) {
-		dev_err(&ndev->dev, "DMA Tx error 0x%x\n", status);
-		dev_err(&ndev->dev, "Current BD is at: 0x%x\n",
-				(lp->tx_bd_v[lp->tx_bd_ci]).phys);
-		cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
-		/* Disable coalesce, delay timer and error interrupts */
-		cr &= (~XAXIDMA_IRQ_ALL_MASK);
-		/* Write to the Tx channel control register */
-		axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, cr);
+		if (status & XAXIDMA_IRQ_ERROR_MASK) {
+			dev_err(&ndev->dev, "DMA Tx error 0x%x\n", status);
+			dev_err(&ndev->dev, "Current BD is at: 0x%x\n",
+					(lp->tx_bd_v[lp->tx_bd_ci]).phys);
+			cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
+			/* Disable coalesce, delay timer and error interrupts */
+			cr &= (~XAXIDMA_IRQ_ALL_MASK);
+			/* Write to the Tx channel control register */
+			axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, cr);
 
-		cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
-		/* Disable coalesce, delay timer and error interrupts */
-		cr &= (~XAXIDMA_IRQ_ALL_MASK);
-		/* Write to the Rx channel control register */
-		axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, cr);
+			cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
+			/* Disable coalesce, delay timer and error interrupts */
+			cr &= (~XAXIDMA_IRQ_ALL_MASK);
+			/* Write to the Rx channel control register */
+			axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, cr);
 
-		tasklet_schedule(&lp->dma_err_tasklet);
+			tasklet_schedule(&lp->dma_err_tasklet);
+		}
 	}
 
 	axienet_dma_out32(lp, XAXIDMA_TX_SR_OFFSET, status);
@@ -961,31 +989,31 @@ static irqreturn_t axienet_rx_irq(int irq, void *_ndev)
 	unsigned int status;
 	u32 cr;
 
-
 	status = axienet_dma_in32(lp, XAXIDMA_RX_SR_OFFSET);
 
-	if (!(status & XAXIDMA_IRQ_ALL_MASK))
-		dev_err(&ndev->dev, "No interrupts asserted in Rx path");
-
-	if (status & (XAXIDMA_IRQ_DELAY_MASK | XAXIDMA_IRQ_IOC_MASK))
+	if (status & (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK))
 		axienet_recv(lp->ndev);
+	else {
+		if (!(status & XAXIDMA_IRQ_ALL_MASK))
+			dev_err(&ndev->dev, "No interrupts asserted in Rx path");
 
-	if (status & XAXIDMA_IRQ_ERROR_MASK) {
-		dev_err(&ndev->dev, "DMA Rx error 0x%x\n", status);
-		dev_err(&ndev->dev, "Current BD is at: 0x%x\n",
+		if (status & XAXIDMA_IRQ_ERROR_MASK) {
+			dev_err(&ndev->dev, "DMA Rx error 0x%x\n", status);
+			dev_err(&ndev->dev, "Current BD is at: 0x%x\n",
 					(lp->rx_bd_v[lp->rx_bd_ci]).phys);
-		cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
-		/* Disable coalesce, delay timer and error interrupts */
-		cr &= (~XAXIDMA_IRQ_ALL_MASK);
-		/* Finally write to the Tx channel control register */
-		axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, cr);
+			cr = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
+			/* Disable coalesce, delay timer and error interrupts */
+			cr &= (~XAXIDMA_IRQ_ALL_MASK);
+			/* Finally write to the Tx channel control register */
+			axienet_dma_out32(lp, XAXIDMA_TX_CR_OFFSET, cr);
 
-		cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
-		/* Disable coalesce, delay timer and error interrupts */
-		cr &= (~XAXIDMA_IRQ_ALL_MASK);
-		/* write to the Rx channel control register */
-		axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, cr);
-		tasklet_schedule(&lp->dma_err_tasklet);
+			cr = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
+			/* Disable coalesce, delay timer and error interrupts */
+			cr &= (~XAXIDMA_IRQ_ALL_MASK);
+			/* write to the Rx channel control register */
+			axienet_dma_out32(lp, XAXIDMA_RX_CR_OFFSET, cr);
+			tasklet_schedule(&lp->dma_err_tasklet);
+		}
 	}
 
 	axienet_dma_out32(lp, XAXIDMA_RX_SR_OFFSET, status);
@@ -1193,6 +1221,393 @@ static const struct net_device_ops axienet_netdev_ops = {
 };
 
 /**
+ * axienet_ethtools_get_settings - Get Axi Ethernet settings related to PHY.
+ * @ndev:	Pointer to net_device structure
+ * @ecmd:	Pointer to ethtool_cmd structure
+ *
+ * This implements ethtool command for getting PHY settings. If PHY could
+ * not be found, the function returns -ENODEV. This function calls the
+ * relevant PHY ethtool API to get the PHY settings.
+ * Issue "ethtool ethX" under linux prompt to execute this function.
+ **/
+static int axienet_ethtools_get_settings(struct net_device *ndev,
+						struct ethtool_cmd *ecmd)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	struct phy_device *phydev = lp->phy_dev;
+
+	if (!phydev)
+		return -ENODEV;
+
+	return phy_ethtool_gset(phydev, ecmd);
+}
+
+/**
+ * axienet_ethtools_set_settings - Set PHY settings as passed in the argument.
+ * @ndev:	Pointer to net_device structure
+ * @ecmd:	Pointer to ethtool_cmd structure
+ *
+ * This implements ethtool command for setting various PHY settings. If PHY
+ * could not be found, the function returns -ENODEV. This function calls the
+ * relevant PHY ethtool API to set the PHY.
+ * Issue e.g. "ethtool -s ethX speed 1000" under linux prompt to execute this
+ * function.
+ **/
+static int axienet_ethtools_set_settings(struct net_device *ndev,
+						struct ethtool_cmd *ecmd)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	struct phy_device *phydev = lp->phy_dev;
+
+	if (!phydev)
+		return -ENODEV;
+
+	return phy_ethtool_sset(phydev, ecmd);
+}
+
+/**
+ * axienet_ethtools_get_drvinfo - Get various Axi Ethernet driver information.
+ * @ndev:	Pointer to net_device structure
+ * @ed:		Pointer to ethtool_drvinfo structure
+ *
+ * This implements ethtool command for getting the driver information.
+ * Issue "ethtool -i ethX" under linux prompt to execute this function.
+ **/
+static void axienet_ethtools_get_drvinfo(struct net_device *ndev,
+						struct ethtool_drvinfo *ed)
+{
+	memset(ed, 0, sizeof(struct ethtool_drvinfo));
+	strcpy(ed->driver, DRIVER_NAME);
+	strcpy(ed->version, DRIVER_VERSION);
+	ed->regdump_len = (sizeof(u32))*(AXIENET_REGS_N);
+}
+
+/**
+ * axienet_ethtools_get_regs_len - Get the total regs length present in the
+ *				   AxiEthernet core.
+ * @ndev:	Pointer to net_device structure
+ *
+ * This implements ethtool command for getting the total register length
+ * information.
+ **/
+static int axienet_ethtools_get_regs_len(struct net_device *ndev)
+{
+	return AXIENET_REGS_N * sizeof(u32);
+}
+
+/**
+ * axienet_ethtools_get_regs - Dump the contents of all registers present
+ *			       in AxiEthernet core.
+ * @ndev:	Pointer to net_device structure
+ * @regs:	Pointer to ethtool_regs structure
+ * @ret:	Void pointer used to return the contents of the registers.
+ *
+ * This implements ethtool command for getting the Axi Ethernet register dump.
+ * Issue "ethtool -d ethX" to execute this function.
+ **/
+static void axienet_ethtools_get_regs(struct net_device *ndev,
+					struct ethtool_regs *regs, void *ret)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	u32 * data = (u32 *) ret;
+
+	regs->version = 0;
+	regs->len = AXIENET_REGS_N * sizeof(u32);
+	memset(ret, 0, AXIENET_REGS_N * sizeof(u32));
+
+	data[0] = axienet_ior(lp, XAE_RAF_OFFSET);
+	data[1] = axienet_ior(lp, XAE_TPF_OFFSET);
+	data[2] = axienet_ior(lp, XAE_IFGP_OFFSET);
+	data[3] = axienet_ior(lp, XAE_IS_OFFSET);
+	data[4] = axienet_ior(lp, XAE_IP_OFFSET);
+	data[5] = axienet_ior(lp, XAE_IE_OFFSET);
+	data[6] = axienet_ior(lp, XAE_TTAG_OFFSET);
+	data[7] = axienet_ior(lp, XAE_RTAG_OFFSET);
+	data[8] = axienet_ior(lp, XAE_UAWL_OFFSET);
+	data[9] = axienet_ior(lp, XAE_UAWU_OFFSET);
+	data[10] = axienet_ior(lp, XAE_TPID0_OFFSET);
+	data[11] = axienet_ior(lp, XAE_TPID1_OFFSET);
+	data[12] = axienet_ior(lp, XAE_PPST_OFFSET);
+	data[13] = axienet_ior(lp, XAE_RCW0_OFFSET);
+	data[14] = axienet_ior(lp, XAE_RCW1_OFFSET);
+	data[15] = axienet_ior(lp, XAE_TC_OFFSET);
+	data[16] = axienet_ior(lp, XAE_FCC_OFFSET);
+	data[17] = axienet_ior(lp, XAE_EMMC_OFFSET);
+	data[18] = axienet_ior(lp, XAE_PHYC_OFFSET);
+	data[19] = axienet_ior(lp, XAE_MDIO_MC_OFFSET);
+	data[20] = axienet_ior(lp, XAE_MDIO_MCR_OFFSET);
+	data[21] = axienet_ior(lp, XAE_MDIO_MWD_OFFSET);
+	data[22] = axienet_ior(lp, XAE_MDIO_MRD_OFFSET);
+	data[23] = axienet_ior(lp, XAE_MDIO_MIS_OFFSET);
+	data[24] = axienet_ior(lp, XAE_MDIO_MIP_OFFSET);
+	data[25] = axienet_ior(lp, XAE_MDIO_MIE_OFFSET);
+	data[26] = axienet_ior(lp, XAE_MDIO_MIC_OFFSET);
+	data[27] = axienet_ior(lp, XAE_UAW0_OFFSET);
+	data[28] = axienet_ior(lp, XAE_UAW1_OFFSET);
+	data[29] = axienet_ior(lp, XAE_FMI_OFFSET);
+	data[30] = axienet_ior(lp, XAE_AF0_OFFSET);
+	data[31] = axienet_ior(lp, XAE_AF1_OFFSET);
+}
+
+/**
+ * axienet_ethtools_get_rx_csum - Get the checksum offload setting on Rx path.
+ * @ndev:	Pointer to net_device structure
+ *
+ * This implements ethtool command for getting the Axi Ethernet checksum
+ * offload setting on Rx path. If the core supports either partial or full
+ * checksum offload, the function returns a non-zero value.
+ * Issue "ethtool -k ethX" under linux prompt to execute this function.
+ **/
+static u32 axienet_ethtools_get_rx_csum(struct net_device *ndev)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+
+	if ((lp->features & XAE_FEATURE_PARTIAL_RX_CSUM) ||
+			(lp->features & XAE_FEATURE_FULL_RX_CSUM))
+		return XAE_FEATURE_PARTIAL_RX_CSUM;
+
+	else
+		return XAE_NO_CSUM_OFFLOAD;
+}
+
+/**
+ * axienet_ethtools_set_rx_csum - Enable checksum offloading on Rx path.
+ * @ndev:	Pointer to net_device structure
+ * @flag:	unsigned long, used to enable/disable checksum offloading.
+ *
+ * This implements ethtool command for enabling Axi Ethernet checksum
+ * offloading. If the core supports full checksum offloading, this function
+ * enables/disables full checksum offloading. Similarly it can enable/disable
+ * partial checksum offloading.
+ * Issue "ethtool -K ethX rx on|off" under linux prompt to execute this
+ * function.
+ **/
+static int axienet_ethtools_set_rx_csum(struct net_device *ndev, u32 flag)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+
+	if (lp->csum_offload_on_rx_path & XAE_FEATURE_PARTIAL_RX_CSUM) {
+		if (flag)
+			lp->features |= XAE_FEATURE_PARTIAL_RX_CSUM;
+		else
+			lp->features &= ~XAE_FEATURE_PARTIAL_RX_CSUM;
+	} else if (lp->csum_offload_on_rx_path & XAE_FEATURE_FULL_RX_CSUM) {
+		if (flag)
+			lp->features |= XAE_FEATURE_FULL_RX_CSUM;
+		else
+			lp->features &= ~XAE_FEATURE_FULL_RX_CSUM;
+	}
+
+	return 0;
+}
+
+/**
+ * axienet_ethtools_get_tx_csum - Get checksum offloading on Tx path.
+ * @ndev:	Pointer to net_device structure
+ *
+ * This implements ethtool command for getting the Axi Ethernet checksum
+ * offload setting on Tx path.
+ * Issue "ethtool -k ethX" under linux prompt to execute this function.
+ **/
+static u32 axienet_ethtools_get_tx_csum(struct net_device *ndev)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+
+	if (lp->features & XAE_FEATURE_PARTIAL_TX_CSUM)
+		return ndev->features & NETIF_F_IP_CSUM;
+	else if (lp->features & XAE_FEATURE_FULL_TX_CSUM)
+		return ndev->features & NETIF_F_HW_CSUM;
+	return 0;
+}
+
+/**
+ * axienet_ethtools_set_tx_csum - Enable checksum offloading on Tx path.
+ * @ndev:	Pointer to net_device structure
+ * @flag:	unsigned long, used to enable/disable checksum offloading.
+ *
+ * This implements ethtool command for setting the Axi Ethernet checksum
+ * offload on Tx path.
+ * Issue "ethtool -K ethX tx on|off" under linux prompt to execute this
+ * function.
+ **/
+static int axienet_ethtools_set_tx_csum(struct net_device *ndev, u32 flag)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+
+	if (lp->csum_offload_on_tx_path & XAE_FEATURE_PARTIAL_TX_CSUM) {
+		if (flag)
+			ndev->features |= NETIF_F_IP_CSUM;
+		else
+			ndev->features &= ~NETIF_F_IP_CSUM;
+	} else if (lp->csum_offload_on_tx_path & XAE_FEATURE_FULL_TX_CSUM) {
+		if (flag)
+			ndev->features |= NETIF_F_HW_CSUM;
+		else
+			ndev->features &= ~NETIF_F_HW_CSUM;
+	}
+
+	return 0;
+}
+
+/**
+ * axienet_ethtools_get_pauseparam - Get the pause parameter setting for
+ *				     Tx and Rx paths.
+ * @ndev:	Pointer to net_device structure
+ * @epauseparm:	Pointer to ethtool_pauseparam structure.
+ *
+ * This implements ethtool command for getting axi ethernet pause frame
+ * setting.
+ * Issue "ethtool -a ethX" to execute this function.
+ **/
+static void axienet_ethtools_get_pauseparam(struct net_device *ndev,
+		struct ethtool_pauseparam *epauseparm)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	u32 regval;
+
+	epauseparm->autoneg  = 0;
+
+	regval = axienet_ior(lp, XAE_FCC_OFFSET);
+	epauseparm->tx_pause = regval & XAE_FCC_FCTX_MASK;
+	epauseparm->rx_pause = regval & XAE_FCC_FCRX_MASK;
+}
+
+/**
+ * axienet_ethtools_set_pauseparam - Set device pause parameter(flow control)
+ * 				     settings.
+ * @ndev:	Pointer to net_device structure
+ * @epauseparam:Pointer to ethtool_pauseparam structure
+ *
+ * This implements ethtool command for enabling flow control on Rx and Tx
+ * paths.
+ * Issue "ethtool -A ethX tx on|off" under linux prompt to execute this
+ * function.
+ **/
+static int axienet_ethtools_set_pauseparam(struct net_device *ndev,
+		struct ethtool_pauseparam *epauseparm)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	u32 regval = 0;
+
+	if (netif_running(ndev)) {
+		printk(KERN_ERR
+			"%s: Please stop netif before applying configruation\n",
+			ndev->name);
+		return -EFAULT;
+	}
+
+	regval = axienet_ior(lp, XAE_FCC_OFFSET);
+
+	if (epauseparm->tx_pause)
+		regval |= XAE_FCC_FCTX_MASK;
+	else
+		regval &= ~XAE_FCC_FCTX_MASK;
+
+	if (epauseparm->rx_pause)
+		regval |= XAE_FCC_FCRX_MASK;
+	else
+		regval &= ~XAE_FCC_FCRX_MASK;
+
+	axienet_iow(lp, XAE_FCC_OFFSET, regval);
+	return 0;
+}
+
+/**
+ * axienet_ethtools_get_coalesce - Get DMA interrupt coalescing count.
+ * @ndev:	Pointer to net_device structure
+ * @ecoalesce:	Pointer to ethtool_coalesce structure
+ *
+ * This implements ethtool command for getting the DMA interrupt coalescing
+ * count on Tx and Rx paths.
+ * Issue "ethtool -c ethX" under linux prompt to execute this function.
+ **/
+static int axienet_ethtools_get_coalesce(struct net_device *ndev,
+					struct ethtool_coalesce *ecoalesce)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+	u32 regval = 0;
+
+	regval = axienet_dma_in32(lp, XAXIDMA_RX_CR_OFFSET);
+	ecoalesce->rx_max_coalesced_frames =
+		(regval & XAXIDMA_COALESCE_MASK) >> XAXIDMA_COALESCE_SHIFT;
+
+	regval = axienet_dma_in32(lp, XAXIDMA_TX_CR_OFFSET);
+	ecoalesce->tx_max_coalesced_frames =
+		(regval & XAXIDMA_COALESCE_MASK) >> XAXIDMA_COALESCE_SHIFT;
+	return 0;
+
+}
+
+/**
+ * axienet_ethtools_set_coalesce - Set DMA interrupt coalescing count.
+ * @ndev:	Pointer to net_device structure
+ * @ecoalesce:	Pointer to ethtool_coalesce structure
+ *
+ * This implements ethtool command for setting the DMA interrupt coalescing
+ * count on Tx and Rx paths.
+ * Issue "ethtool -C ethX rx-frames 5" under linux prompt to execute this
+ * function.
+ **/
+static int axienet_ethtools_set_coalesce(struct net_device *ndev,
+					struct ethtool_coalesce *ecoalesce)
+{
+	struct axienet_local *lp = netdev_priv(ndev);
+
+	if (netif_running(ndev)) {
+		printk(KERN_ERR
+			"%s: Please stop netif before applying configruation\n",
+			ndev->name);
+		return -EFAULT;
+	}
+
+	if ((ecoalesce->rx_coalesce_usecs) ||
+		(ecoalesce->rx_coalesce_usecs_irq) ||
+		(ecoalesce->rx_max_coalesced_frames_irq) ||
+		(ecoalesce->tx_coalesce_usecs) ||
+		(ecoalesce->tx_coalesce_usecs_irq) ||
+		(ecoalesce->tx_max_coalesced_frames_irq) ||
+		(ecoalesce->stats_block_coalesce_usecs) ||
+		(ecoalesce->use_adaptive_rx_coalesce) ||
+		(ecoalesce->use_adaptive_tx_coalesce) ||
+		(ecoalesce->pkt_rate_low) ||
+		(ecoalesce->rx_coalesce_usecs_low) ||
+		(ecoalesce->rx_max_coalesced_frames_low) ||
+		(ecoalesce->tx_coalesce_usecs_low) ||
+		(ecoalesce->tx_max_coalesced_frames_low) ||
+		(ecoalesce->pkt_rate_high) ||
+		(ecoalesce->rx_coalesce_usecs_high) ||
+		(ecoalesce->rx_max_coalesced_frames_high) ||
+		(ecoalesce->tx_coalesce_usecs_high) ||
+		(ecoalesce->tx_max_coalesced_frames_high) ||
+		(ecoalesce->rate_sample_interval))
+		return -EOPNOTSUPP;
+	if (ecoalesce->rx_max_coalesced_frames)
+		lp->coalesce_count_rx = ecoalesce->rx_max_coalesced_frames;
+	if (ecoalesce->tx_max_coalesced_frames)
+		lp->coalesce_count_tx = ecoalesce->tx_max_coalesced_frames;
+
+	return 0;
+}
+
+static struct ethtool_ops axienet_ethtool_ops = {
+	.get_settings   = axienet_ethtools_get_settings,
+	.set_settings   = axienet_ethtools_set_settings,
+	.get_drvinfo    = axienet_ethtools_get_drvinfo,
+	.get_regs_len   = axienet_ethtools_get_regs_len,
+	.get_regs       = axienet_ethtools_get_regs,
+	.get_link       = ethtool_op_get_link,       /* ethtool default */
+	.get_rx_csum    = axienet_ethtools_get_rx_csum,
+	.set_rx_csum    = axienet_ethtools_set_rx_csum,
+	.get_tx_csum    = axienet_ethtools_get_tx_csum,
+	.set_tx_csum    = axienet_ethtools_set_tx_csum,
+	.get_sg         = ethtool_op_get_sg,         /* ethtool default */
+	.get_pauseparam = axienet_ethtools_get_pauseparam,
+	.set_pauseparam = axienet_ethtools_set_pauseparam,
+	.get_coalesce   = axienet_ethtools_get_coalesce,
+	.set_coalesce   = axienet_ethtools_set_coalesce,
+};
+
+/**
  * axienet_dma_err_handler - Tasklet handler for Axi DMA Error
  * @data:	Data passed
  *
@@ -1397,6 +1812,7 @@ axienet_of_probe(struct platform_device *op, const struct of_device_id *match)
 	struct axienet_local *lp;
 	struct net_device *ndev;
 	const void *addr;
+	int k = 0;
 
 	__be32 *p;
 	int size, rc = 0;
@@ -1413,6 +1829,7 @@ axienet_of_probe(struct platform_device *op, const struct of_device_id *match)
 	ndev->flags &= ~IFF_MULTICAST;  /* clear multicast */
 	ndev->features = NETIF_F_SG | NETIF_F_FRAGLIST;
 	ndev->netdev_ops = &axienet_netdev_ops;
+	ndev->ethtool_ops = &axienet_ethtool_ops;
 
 	/* Setup Axi Ethernet private info structure */
 	lp = netdev_priv(ndev);
@@ -1431,15 +1848,39 @@ axienet_of_probe(struct platform_device *op, const struct of_device_id *match)
 	lp->features = 0;
 
 	p = (__be32 *)of_get_property(op->dev.of_node, "xlnx,txcsum", NULL);
-	if (p && be32_to_cpup(p)) {
-		lp->features |= XAE_FEATURE_PARTIAL_TX_CSUM;
-		/* Can checksum TCP/UDP over IPv4. */
-		ndev->features |= NETIF_F_IP_CSUM;
+
+	if (p) {
+		k = be32_to_cpup(p);
+		if (k == 1) {
+			lp->csum_offload_on_tx_path =
+					XAE_FEATURE_PARTIAL_TX_CSUM;
+			lp->features |= XAE_FEATURE_PARTIAL_TX_CSUM;
+			/* Can checksum TCP/UDP over IPv4. */
+			ndev->features |= NETIF_F_IP_CSUM;
+		} else if (k == 2) {
+			lp->csum_offload_on_tx_path =
+					XAE_FEATURE_FULL_TX_CSUM;
+			lp->features |= XAE_FEATURE_FULL_TX_CSUM;
+			/* Can checksum TCP/UDP over IPv4. */
+			ndev->features |= NETIF_F_IP_CSUM;
+		} else
+			lp->csum_offload_on_tx_path = XAE_NO_CSUM_OFFLOAD;
 	}
 
 	p = (__be32 *)of_get_property(op->dev.of_node, "xlnx,rxcsum", NULL);
-	if (p && be32_to_cpup(p))
-		lp->features |= XAE_FEATURE_PARTIAL_RX_CSUM;
+	if (p) {
+		k = be32_to_cpup(p);
+		if (k == 1) {
+			lp->csum_offload_on_rx_path =
+					XAE_FEATURE_PARTIAL_RX_CSUM;
+			lp->features |= XAE_FEATURE_PARTIAL_RX_CSUM;
+		} else if (k == 2) {
+			lp->csum_offload_on_rx_path =
+					XAE_FEATURE_FULL_RX_CSUM;
+			lp->features |= XAE_FEATURE_FULL_RX_CSUM;
+		} else
+			lp->csum_offload_on_rx_path = XAE_NO_CSUM_OFFLOAD;
+	}
 
 	/* For supporting jumbo frames, the Axi Ethernet hardware must have
 	 * a larger Rx/Tx Memory. Typically, the size must be more than or
@@ -1497,6 +1938,9 @@ axienet_of_probe(struct platform_device *op, const struct of_device_id *match)
 	}
 
 	axienet_set_mac_address(ndev, (void *)addr);
+
+	lp->coalesce_count_rx = XAXIDMA_DFT_RX_THRESHOLD;
+	lp->coalesce_count_tx = XAXIDMA_DFT_TX_THRESHOLD;
 
 	lp->phy_node = of_parse_phandle(op->dev.of_node, "phy-handle", 0);
 	rc = axienet_mdio_setup(lp, op->dev.of_node);
