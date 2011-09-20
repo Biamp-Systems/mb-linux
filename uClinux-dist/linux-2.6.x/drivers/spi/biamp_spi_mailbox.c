@@ -62,6 +62,7 @@ static void disable_mailbox(struct spi_mailbox *mailbox) {
   controlRegister = XIo_In32(REGISTER_ADDRESS(mailbox, CONTROL_REG));
   controlRegister &= ~MAILBOX_ENABLE;
   XIo_Out32(REGISTER_ADDRESS(mailbox, CONTROL_REG), controlRegister);
+  DBG("Mailbox disabled\n");
 }
 
 /* Enables the passed instance */
@@ -87,22 +88,22 @@ static int32_t await_message_ready(struct spi_mailbox *mailbox) {
   int32_t returnValue = 0;
 
   /* Determine whether to use an interrupt or polling */
-    int32_t waitResult;
+  int32_t waitResult;
 
-    /* Place ourselves onto a wait queue if a message is flagged as available
-    * by the hardware, as this indicates that the mailbox is active, and we 
-    * need to wait for it to finish reading the message.  If the mailbox in 
-    * not active or the message has alreadly been read, we will not actually 
-    * enter the wait queue.
-    */
-    waitResult =
-      wait_event_interruptible(mailbox->messageReadQueue, (mailbox->messageReadyFlag == MESSAGE_READY));
+  /* Place ourselves onto a wait queue if a message is flagged as available
+   * by the hardware, as this indicates that the mailbox is active, and we 
+   * need to wait for it to finish reading the message.  If the mailbox in 
+   * not active or the message has alreadly been read, we will not actually 
+   * enter the wait queue.
+   */
+  waitResult =
+    wait_event_interruptible(mailbox->messageReadQueue, (mailbox->messageReadyFlag == MESSAGE_READY));
 
-      /* Reset message ready flag after exiting the wait queue */ 
-      mailbox->messageReadyFlag = MESSAGE_NOT_READY;
+  /* Reset message ready flag after exiting the wait queue */ 
+  mailbox->messageReadyFlag = MESSAGE_NOT_READY;
 
-      /* If negative, a signal interrupted the wait. */
-       if(waitResult < 0) returnValue = -EAGAIN;
+  /* If negative, a signal interrupted the wait. */
+  if(waitResult < 0) returnValue = -EINTR;
 			    
   /* Return success */
   return(returnValue);
@@ -117,7 +118,7 @@ static irqreturn_t biamp_spi_mailbox_interrupt(int irq, void *dev_id) {
   /* Read the interrupt flags and immediately clear them */
   maskedFlags = XIo_In32(REGISTER_ADDRESS(mailbox, IRQ_FLAGS_REG));
   irqMask = XIo_In32(REGISTER_ADDRESS(mailbox, IRQ_MASK_REG));
-  
+
   maskedFlags &= irqMask;
   XIo_Out32(REGISTER_ADDRESS(mailbox, IRQ_FLAGS_REG), maskedFlags);
 
@@ -188,7 +189,7 @@ static uint32_t read_mailbox_message(struct spi_mailbox *mailbox, uint8_t* mailb
   DBG("Read mailbox message \n");
   messageLength  = XIo_In32(REGISTER_ADDRESS(mailbox, HOST_MSG_LEN_REG));
   for(i=0; i < ((messageLength + 3)/4); i++) { 
-   ((uint32_t*)mailboxMessage)[i] = XIo_In32(MSG_RAM_BASE(mailbox)+(i*4));
+    ((uint32_t*)mailboxMessage)[i] = XIo_In32(MSG_RAM_BASE(mailbox)+(i*4));
   }
   /* Toggle bit in control register to acknowledge message has been picked up */
   controlReg = XIo_In32(REGISTER_ADDRESS(mailbox, CONTROL_REG));
@@ -199,10 +200,10 @@ static uint32_t read_mailbox_message(struct spi_mailbox *mailbox, uint8_t* mailb
 /* Write response out to a received message
  */
 static void send_message_response(struct spi_mailbox *mailbox, 
-		                       MessageData *data) {
+                                  MessageData *data) {
   int i;
   DBG("Writing response message \n");
-  
+  printk("Sending response\n");
   for(i=0; i < ((data->length + 3)/4); i++) {
     XIo_Out32(MSG_RAM_BASE(mailbox)+(i*4), ((uint32_t*)data->messageContent)[i]);
   }
@@ -257,7 +258,7 @@ static uint8_t messageBuffer[MAX_MESSAGE_DATA];
 
 /* I/O control operations for the driver */
 static int spi_mailbox_ioctl(struct inode *inode, struct file *flip,
-			     unsigned int command, unsigned long arg)
+                             unsigned int command, unsigned long arg)
 {
   // Switch on the request
   int returnValue = 0;
@@ -277,88 +278,88 @@ static int spi_mailbox_ioctl(struct inode *inode, struct file *flip,
       MessageData userMessage;
       MessageData localMessage;
     
-     /* Copy into our local descriptor, then obtain buffer pointer from userland */
-     if(copy_from_user(&userMessage, (void __user*)arg, sizeof(userMessage)) != 0) {
-       return(-EFAULT);
-     }
+      /* Copy into our local descriptor, then obtain buffer pointer from userland */
+      if(copy_from_user(&userMessage, (void __user*)arg, sizeof(userMessage)) != 0) {
+        return(-EFAULT);
+      }
 
-     returnValue = await_message_ready(mailbox);
+      returnValue = await_message_ready(mailbox);
      
-     if(returnValue < 0) {
-       return(returnValue);
-     }
+      if(returnValue < 0) {
+        return(returnValue);
+      }
 
-     localMessage.length = read_mailbox_message(mailbox, messageBuffer);
+      localMessage.length = read_mailbox_message(mailbox, messageBuffer);
      
-     if(copy_to_user((void __user*)userMessage.messageContent, messageBuffer,
-                     (min(userMessage.length, localMessage.length))) != 0) {
-       return(-EFAULT);
-     }
+      if(copy_to_user((void __user*)userMessage.messageContent, messageBuffer,
+                      (min(userMessage.length, localMessage.length))) != 0) {
+        return(-EFAULT);
+      }
 
-     if(copy_to_user((void __user*)arg, &localMessage.length, sizeof(localMessage.length)) != 0 ) {
-       return(-EFAULT);
-     }
-   }  
-   break;
+      if(copy_to_user((void __user*)arg, &localMessage.length, sizeof(localMessage.length)) != 0 ) {
+        return(-EFAULT);
+      }
+    }  
+    break;
   
   case IOC_WRITE_RESP:
     {  
       MessageData userMessage;
 
-     /* Copy into our local descriptor, then obtain buffer pointer from userland */
-     if(copy_from_user(&userMessage, (void __user*)arg, sizeof(userMessage)) != 0) {
-       return(-EFAULT);
-     }
-     if(userMessage.length > MAX_MESSAGE_DATA) {
-       return(-EINVAL);
-     }
-     if(copy_from_user(messageBuffer, (void __user*)userMessage.messageContent, 
-                       userMessage.length) != 0) {
-       return(-EFAULT);
-     }
-     userMessage.messageContent = messageBuffer;
-     send_message_response(mailbox, &userMessage);
-   }  
-   break;
+      /* Copy into our local descriptor, then obtain buffer pointer from userland */
+      if(copy_from_user(&userMessage, (void __user*)arg, sizeof(userMessage)) != 0) {
+        return(-EFAULT);
+      }
+      if(userMessage.length > MAX_MESSAGE_DATA) {
+        return(-EINVAL);
+      }
+      if(copy_from_user(messageBuffer, (void __user*)userMessage.messageContent, 
+                        userMessage.length) != 0) {
+        return(-EFAULT);
+      }
+      userMessage.messageContent = messageBuffer;
+      send_message_response(mailbox, &userMessage);
+    }  
+    break;
   
   case IOC_SET_SPI_IRQ_FLAGS:
-   {
-     set_spi_irq_flags(mailbox, ((uint8_t)arg));
-   }
-   break;
+    {
+      set_spi_irq_flags(mailbox, ((uint8_t)arg));
+    }
+    break;
 
   case IOC_CLEAR_SPI_IRQ_FLAGS:
-  {
-    clear_spi_irq_flags(mailbox, ((uint8_t)arg));
-  }
+    {
+      clear_spi_irq_flags(mailbox, ((uint8_t)arg));
+    }
 
   case IOC_READ_SPI_IRQ_FLAGS:
-  {
-    uint32_t returnValue = read_spi_irq_flags(mailbox);
+    {
+      uint32_t returnValue = read_spi_irq_flags(mailbox);
      
-    if(copy_to_user((void __user*)arg, &returnValue, sizeof(returnValue)) != 0 ) {
-       return(-EFAULT);
-     }
-  }
+      if(copy_to_user((void __user*)arg, &returnValue, sizeof(returnValue)) != 0 ) {
+        return(-EFAULT);
+      }
+    }
 
   case IOC_SET_SPI_IRQ_MASK:
-  {
-    set_spi_irq_mask(mailbox, ((uint8_t)arg));
-  }
+    {
+      set_spi_irq_mask(mailbox, ((uint8_t)arg));
+    }
 
   case IOC_READ_SPI_IRQ_MASK:
-  {
-    uint32_t returnValue = read_spi_irq_mask(mailbox);
+    {
+      uint32_t returnValue = read_spi_irq_mask(mailbox);
     
-    if(copy_to_user((void __user*)arg, &returnValue, sizeof(returnValue)) != 0 ) {
-       return(-EFAULT);
-     }
-  }
+      if(copy_to_user((void __user*)arg, &returnValue, sizeof(returnValue)) != 0 ) {
+        return(-EFAULT);
+      }
+    }
 
   default:
     /* We don't recognize this command.
      */
-     returnValue = -EINVAL;
+    returnValue = -EINVAL;
   }
 
   /* Return an error code appropriate to the command */
@@ -382,9 +383,9 @@ static struct file_operations spi_mailbox_fops = {
  * @param irq          - Resource describing the hardware's IRQ
  */
 static int spi_mailbox_probe(const char *name, 
-			     struct platform_device *pdev,
-			     struct resource *addressRange,
-			     struct resource *irq) {
+                             struct platform_device *pdev,
+                             struct resource *addressRange,
+                             struct resource *irq) {
   struct spi_mailbox *mailbox;
   int returnValue;
 
@@ -449,7 +450,7 @@ static int spi_mailbox_probe(const char *name,
   /* Add as a character device to make the instance available for use */
   cdev_init(&mailbox->cdev, &spi_mailbox_fops);
   mailbox->cdev.owner = THIS_MODULE;
-  kobject_set_name(&mailbox->cdev.kobj, "%s%d", pdev->name, pdev->id);
+  kobject_set_name(&mailbox->cdev.kobj, "%s%d", mailbox->name, mailbox->instanceNumber);
   mailbox->instanceNumber = instanceCount++;
   cdev_add(&mailbox->cdev, MKDEV(DRIVER_MAJOR, mailbox->instanceNumber), 1);
 
@@ -461,6 +462,8 @@ static int spi_mailbox_probe(const char *name,
     XIo_Out32(REGISTER_ADDRESS(mailbox, IRQ_FLAGS_REG), ALL_IRQS);
     XIo_Out32(REGISTER_ADDRESS(mailbox, IRQ_MASK_REG), IRQ_S2H_MSG_RX);
   }
+
+  DBG("Mailbox initialized\n");
 
   /* Return success */
   return(0);
@@ -496,11 +499,11 @@ static int __devinit spi_mailbox_of_probe(struct of_device *ofdev, const struct 
   }
 
   rc = of_irq_to_resource(ofdev->node, 0, irq);
-    if(rc == NO_IRQ) {
-      /* No IRQ was defined; null the resource pointer to indicate polled mode */
-      irq = NULL;
-      return(rc);
-    }
+  if(rc == NO_IRQ) {
+    /* No IRQ was defined; null the resource pointer to indicate polled mode */
+    irq = NULL;
+    return(rc);
+  }
 
   /* Dispatch to the generic function */
   return(spi_mailbox_probe(name, pdev, addressRange, irq));

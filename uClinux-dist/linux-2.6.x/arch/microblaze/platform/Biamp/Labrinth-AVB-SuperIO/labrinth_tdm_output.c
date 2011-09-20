@@ -27,6 +27,7 @@
 #include "labrinth_tdm_output.h"
 #include <asm/uaccess.h>
 #include <linux/labx_local_audio.h>
+#include <linux/labx_local_audio_defs.h>
 #include <linux/platform_device.h>
 #include <xio.h>
 
@@ -85,13 +86,13 @@
  */
 #define TDM_DEMUX_RANGE  (0x03)
 #define TDM_DEMUX_ADDRESS(device, offset)                    \
-  ((uintptr_t)device->labxLocalAudio->dma.virtualAddress |  \
-   (TDM_DEMUX_RANGE << device->labxLocalAudio->dma.regionShift) | (offset << 2))
+  ((uintptr_t)device->labxLocalAudio->dma->virtualAddress |  \
+   (TDM_DEMUX_RANGE << device->labxLocalAudio->dma->regionShift) | (offset << 2))
 
 /* Buffer for storing stream map entries */
 static StreamMapEntry mapEntryBuffer[MAX_MAP_ENTRIES];
 
-/* Configures the psuedorandom analyzer */
+/* Configures the pseudorandom analyzer */
 static void configure_analyzer(struct labrinth_tdm_output *tdmOutput,
                                AnalyzerConfig *analyzerConfig) {
   uint32_t controlRegister;
@@ -107,8 +108,8 @@ static void configure_analyzer(struct labrinth_tdm_output *tdmOutput,
     controlRegister |= (analyzerConfig->sportChannel & ANALYZER_SLOT_MASK);
     controlRegister |= ANALYZER_ENABLE;
 
-    /* Set up the analyzer to predict either a psuedorandom or linear ramp */
-    if(analyzerConfig->signalControl == ANALYSIS_PSUEDORANDOM) {
+    /* Set up the analyzer to predict either a pseudorandom or linear ramp */
+    if(analyzerConfig->signalControl == ANALYSIS_PSEUDORANDOM) {
       controlRegister &= ~ANALYZER_RAMP;
     } else controlRegister |= ANALYZER_RAMP;
 
@@ -172,7 +173,7 @@ static void reset_labrinth_tdm(struct labrinth_tdm_output *tdmOutput) {
   uint32_t bankIndex;
   uint32_t channelIndex;
 
-  /* Disable the psuedorandom analyzer */
+  /* Disable the pseudorandom analyzer */
   analyzerConfig.enable = LFSR_ANALYZER_DISABLE;
   configure_analyzer(tdmOutput, &analyzerConfig);
 
@@ -303,7 +304,7 @@ static irqreturn_t labrinth_tdm_interrupt(int irq, void *dev_id) {
   maskedFlags &= irqMask;
   XIo_Out32(TDM_DEMUX_ADDRESS(tdmOutput, TDM_IRQ_FLAGS_REG), maskedFlags);
 
-  /* Detect the psuedorandom analysis error IRQ */
+  /* Detect the pseudorandom analysis error IRQ */
   if((maskedFlags & ANALYSIS_ERROR_IRQ) != 0) {
     /* TEMPORARY - Just announce this and treat it as a one-shot.
      *             Ultimately this should be communicated via generic Netlink.
@@ -313,7 +314,7 @@ static irqreturn_t labrinth_tdm_interrupt(int irq, void *dev_id) {
     printk("%s: Analysis error!\n", tdmOutput->labxLocalAudio->name);
   }
 
-  /* Detect the psuedorandom analysis error IRQ */
+  /* Detect the pseudorandom analysis error IRQ */
   if((maskedFlags & DMA_ERROR_IRQ) != 0) {
     /* TEMPORARY - Just announce this and treat it as a one-shot.
      *             Ultimately this should be communicated via generic Netlink.
@@ -348,9 +349,13 @@ int labrinth_tdm_probe(const char *name,
   /* Dispatch to the Lab X local audio driver for most of the setup.
    * We pass it our file operations structure to be invoked polymorphically.
    */
-  returnValue = labx_local_audio_probe(name, pdev, addressRange,
+  returnValue = labx_local_audio_probe(name, 
+                                       pdev, 
+                                       addressRange,
+                                       LA_DMA_INTERFACE_NPI,
                                        LABRINTH_TDM_NUM_CHANNELS,
-                                       &labrinth_tdm_fops, tdmOutput,
+                                       &labrinth_tdm_fops, 
+                                       tdmOutput,
                                        &tdmOutput->labxLocalAudio);
   if(returnValue != 0) goto free;
 
@@ -485,7 +490,7 @@ static struct platform_driver labrinth_tdm_driver = {
 };
 
 /* Driver initialization and exit */
-static int __init labrinth_tdm_driver_init(void)
+static int __devinit labrinth_tdm_driver_init(void)
 {
   int returnValue;
   printk(KERN_INFO DRIVER_NAME ": Labrinth Audio TDM Output driver\n");
@@ -504,7 +509,7 @@ static int __init labrinth_tdm_driver_init(void)
   return(0);
 }
 
-static void __exit labrinth_tdm_driver_exit(void)
+static void __devexit labrinth_tdm_driver_exit(void)
 {
   /* Unregister as a platform device driver */
   platform_driver_unregister(&labrinth_tdm_driver);

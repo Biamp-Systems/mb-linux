@@ -253,8 +253,8 @@
  *
  *****************************************************************************/
 
-#ifndef XTEMAC_H		/* prevent circular inclusions */
-#define XTEMAC_H		/* by using protection macros */
+#ifndef LABX_ETHERNET_H		/* prevent circular inclusions */
+#define LABX_ETHERNET_H		/* by using protection macros */
 
 #ifdef __cplusplus
 extern "C" {
@@ -270,12 +270,6 @@ extern "C" {
 #include <linux/interrupt.h>
 
 /************************** Constant Definitions *****************************/
-
-/*
- * Device information
- */
-#define XTE_DEVICE_NAME     "xlltemac"
-#define XTE_DEVICE_DESC     "Xilinx Tri-speed 10/100/1000 MAC"
 
 /* LocalLink TYPE Enumerations */
 #define XPAR_LL_FIFO    1
@@ -425,6 +419,8 @@ typedef struct {
 			  *  multiple phys are on the same MDIO. 0 == autodetect
 			  */ 
 	u8 TemacIntr;	/**< TEMAC interrupt ID */
+	
+	u8 MacWidth;
 
 	u8 LLFifoIntr;	/**< LL FIFO interrupt ID */
   u8 MacAddress[6];  /** TEMPORARY software cache of MAC address */
@@ -451,6 +447,9 @@ typedef struct XLlTemac {
   wait_queue_head_t PhyWait; /* Wait queue for PHY operations */
   u32 MdioState;             /* MDIO state */
   struct mii_bus *mdio_bus;  /* MDIO bus driver instance */
+  u32 versionReg;            /* Version register */
+  u32 MacMatchUnits;         /* Number of supported MAC filters */
+  struct net_device *dev;    /* Pointer back to the net device */
 } XLlTemac;
 
 
@@ -733,9 +732,8 @@ void labx_eth_PhyRead(XLlTemac *InstancePtr, u32 PhyAddress, u32 RegisterNum,
 		      u16 *PhyDataPtr);
 void labx_eth_PhyWrite(XLlTemac *InstancePtr, u32 PhyAddress, u32 RegisterNum,
 		       u16 PhyData);
-int labx_eth_MulticastAdd(XLlTemac *InstancePtr, void *AddressPtr, int Entry);
-void labx_eth_MulticastGet(XLlTemac *InstancePtr, void *AddressPtr, int Entry);
-int labx_eth_MulticastClear(XLlTemac *InstancePtr, int Entry);
+
+void labx_eth_UpdateMacFilters(XLlTemac *InstancePtr);
 
 extern int labx_eth_mdio_bus_init(struct device *dev, struct labx_eth_platform_data *pdata, XLlTemac *InstancePtr);
 #ifdef __cplusplus

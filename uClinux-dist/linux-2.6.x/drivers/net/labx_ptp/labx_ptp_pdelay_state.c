@@ -55,10 +55,10 @@ static void computePdelayRateRatio(struct ptp_device *ptp, uint32_t port)
      * initial Tx or Rx timestamp is later than the present one, the initial ones are bogus and
      * must be replaced.
      */
-    if((difference.secondsUpper & 0x8000000000000000ULL) |
-       (difference2.secondsUpper & 0x8000000000000000ULL)) {
+    if((difference.secondsUpper & 0x80000000) |
+       (difference2.secondsUpper & 0x80000000)) {
       ptp->ports[port].initPdelayRespReceived = FALSE;
-      ptp->ports[port].neighborRateRatioValid = TRUE;
+      ptp->ports[port].neighborRateRatioValid = FALSE;
     } else {
       nsResponder = ((uint64_t)difference.secondsLower) * 1000000000ULL + (uint64_t)difference.nanoseconds;
       nsRequester = ((uint64_t)difference2.secondsLower) * 1000000000ULL + (uint64_t)difference2.nanoseconds;
@@ -68,10 +68,12 @@ static void computePdelayRateRatio(struct ptp_device *ptp, uint32_t port)
           if (nsResponder & (1ULL<<(63-shift))) break;
         }
 
-      rateRatio = (nsResponder << shift) / (nsRequester >> (31-shift));
-      ptp->ports[port].neighborRateRatio = (uint32_t)rateRatio;
+      if ((nsRequester >> (31-shift)) != 0) {
+        rateRatio = (nsResponder << shift) / (nsRequester >> (31-shift));
+        ptp->ports[port].neighborRateRatio = (uint32_t)rateRatio;
 
-      ptp->ports[port].neighborRateRatioValid = TRUE;
+        ptp->ports[port].neighborRateRatioValid = TRUE;
+      }
 
 #ifdef PATH_DELAY_DEBUG
       printk("Responder delta: %08X%08X.%08X (%llu ns)\n", difference.secondsUpper,
@@ -237,6 +239,11 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
 /* 802.1AS MDPdelayReq state machine (11.2.15.3) transitions */
 void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
 {
+  if(ptp->properties.delayMechanism != PTP_DELAY_MECHANISM_P2P) {
+    /* The PDELAY state machine should only be active in P2P mode */
+    return;
+  }
+
 //  printk("PTP IDX %d, PE %d, PTTE %d, PDIT %d, PDRI %d\n", port, ptp->ports[port].portEnabled,
 //    ptp->ports[port].pttPortEnabled, ptp->ports[port].pdelayIntervalTimer, ptp->ports[port].pdelayReqInterval);
 

@@ -149,6 +149,10 @@
 #define PTP_RTC_UNLOCKED (0)
 #define PTP_RTC_LOCKED   (1)
 
+/* Enumeration for RTC acquisition */
+#define PTP_RTC_ACQUIRED  (0)
+#define PTP_RTC_ACQUIRING (1)
+
 /* Enumeration for flagging valid RTC offsets */
 #define PTP_RTC_OFFSET_INVALID (0)
 #define PTP_RTC_OFFSET_VALID   (1)
@@ -188,7 +192,9 @@ struct ptp_port {
   PtpTime syncTxTimestamp;
   uint32_t syncTimestampsValid;
   PtpTime delayReqTxTimestampTemp;
+  PtpTime delayReqTxLocalTimestampTemp;
   PtpTime delayReqTxTimestamp;
+  PtpTime delayReqTxLocalTimestamp;
   PtpTime delayReqRxTimestamp;
   uint32_t delayReqTimestampsValid;
 
@@ -294,6 +300,8 @@ struct ptp_device {
   /* RTC control loop constants */
   RtcIncrement    nominalIncrement;
   PtpCoefficients coefficients;
+  uint32_t masterRateRatio;
+  uint32_t masterRateRatioValid;
 
   /* RTC control loop persistent values */
   int64_t  integral;
@@ -303,10 +311,12 @@ struct ptp_device {
   int32_t  rtcLastOffset;
   uint32_t rtcLastOffsetValid;
   uint32_t rtcLastLockState;
+  uint32_t acquiring;
   uint32_t rtcLockState;
   uint32_t rtcLockCounter;
   uint32_t rtcLockTicks;
   uint32_t rtcUnlockTicks;
+  RtcIncrement currentIncrement;
 
   /* Present role and delay mechanism for the endpoint */
   PtpRole presentRole;
@@ -371,7 +381,7 @@ void transmit_pdelay_request(struct ptp_device *ptp, uint32_t port);
 void transmit_pdelay_response(struct ptp_device *ptp, uint32_t port, uint32_t requestRxBuffer);
 void transmit_pdelay_response_fup(struct ptp_device *ptp, uint32_t port);
 void print_packet_buffer(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
-                         uint32_t packetBuffer);
+                         uint32_t packetBuffer, uint32_t packetWords);
 uint16_t get_sequence_id(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
                          uint32_t packetBuffer);
 void get_hardware_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
@@ -393,9 +403,11 @@ void LinkDelaySyncIntervalSetting_StateMachine(struct ptp_device *ptp, uint32_t 
 /* From labx_ptp_rtc.c */
 void disable_rtc(struct ptp_device *ptp);
 void set_rtc_increment(struct ptp_device *ptp, RtcIncrement *increment);
+void get_rtc_increment(struct ptp_device *ptp, RtcIncrement *increment);
 void get_rtc_time(struct ptp_device *ptp, PtpTime *time);
 void get_local_time(struct ptp_device *ptp, PtpTime *time);
 void set_rtc_time(struct ptp_device *ptp, PtpTime *time);
+void set_rtc_time_adjusted(struct ptp_device *ptp, PtpTime *time, PtpTime *entryTime);
 void rtc_update_servo(struct ptp_device *ptp, uint32_t port);
 void update_rtc_lock_detect(struct ptp_device *ptp);
 

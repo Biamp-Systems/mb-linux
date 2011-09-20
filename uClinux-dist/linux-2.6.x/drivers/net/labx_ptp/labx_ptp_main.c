@@ -230,7 +230,7 @@ static int ptp_device_event(struct notifier_block *nb, unsigned long event, void
 }
 
 /* Stops the PTP service */
-static void ptp_stop_service(struct ptp_device *ptp) {
+void ptp_stop_service(struct ptp_device *ptp) {
   int i;
 
   /* Stopping the service is as simple as disabling all the interrupts */
@@ -239,11 +239,11 @@ static void ptp_stop_service(struct ptp_device *ptp) {
   }
 
   /* Also stop the RTC */
-  disable_rtc(ptp);
+  // disable_rtc(ptp);
 }
 
 /* Starts the PTP service */
-static void ptp_start_service(struct ptp_device *ptp) {
+void ptp_start_service(struct ptp_device *ptp) {
   uint32_t irqMask;
   int i;
 
@@ -846,6 +846,8 @@ static int __devexit ptp_of_remove(struct platform_device *dev)
 static struct of_device_id ptp_of_match[] = {
 	{ .compatible = "xlnx,labx-ptp-1.00.a", },
 	{ .compatible = "xlnx,labx-ptp-1.01.a", },
+	{ .compatible = "xlnx,labx-ptp-1.03.a", },
+    { .compatible = "xlnx,labx-ptp-1.04.a", },
 	{ /* end of list */ },
 };
 
@@ -956,7 +958,7 @@ static int __init ptp_driver_init(void)
   /* Allocate a range of major / minor device numbers for use */
   instanceCount = 0;
   if((returnValue = register_chrdev_region(MKDEV(DRIVER_MAJOR, 0),MAX_INSTANCES, DRIVER_NAME)) < 0) { 
-    printk(KERN_INFO DRIVER_NAME "Failed to allocate character device range\n");
+    printk(KERN_INFO DRIVER_NAME ": Failed to allocate character device range\n");
   }
 
   /* Initialize the Netlink layer for the driver */

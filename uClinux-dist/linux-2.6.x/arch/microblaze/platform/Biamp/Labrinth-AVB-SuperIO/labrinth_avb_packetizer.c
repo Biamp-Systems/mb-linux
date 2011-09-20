@@ -55,6 +55,9 @@
 #  define GENERATOR_LANE_MASK   (0x1E0)
 #  define GENERATOR_LANE_SHIFT      (5)
 
+#define TDM_LATENCY_REG       (0x001)
+#  define TDM_LATENCY_MASK  (0x0FF)
+
 /* Locates a register within the TDM multiplexer logic, using the
  * hardware-configured region shift detected by the audio packetizer
  * driver.
@@ -164,6 +167,16 @@ static int labrinth_packetizer_ioctl(struct inode *inode, struct file *filp,
         return(-EFAULT);
       }
       configure_generator(packetizer, &generatorConfig);
+    }
+    break;
+
+  case IOC_GET_LATENCY:
+    {
+      /* Simply fetch the latency register and return it */
+      uint32_t latency = XIo_In32(TDM_MUX_ADDRESS(packetizer, TDM_LATENCY_REG));
+      if(copy_to_user((void __user*)arg, &latency, sizeof(uint32_t)) != 0) {
+        return(-EFAULT);
+      }
     }
     break;
 
@@ -336,7 +349,7 @@ static struct platform_driver labrinth_packetizer_driver = {
 };
 
 /* Driver initialization and exit */
-static int __init labrinth_packetizer_driver_init(void)
+static int __devinit labrinth_packetizer_driver_init(void)
 {
   int returnValue;
   printk(KERN_INFO DRIVER_NAME ": Labrinth Audio Packetizer driver\n");
@@ -355,7 +368,7 @@ static int __init labrinth_packetizer_driver_init(void)
   return(0);
 }
 
-static void __exit labrinth_packetizer_driver_exit(void)
+static void __devexit labrinth_packetizer_driver_exit(void)
 {
   /* Unregister as a platform device driver */
   platform_driver_unregister(&labrinth_packetizer_driver);

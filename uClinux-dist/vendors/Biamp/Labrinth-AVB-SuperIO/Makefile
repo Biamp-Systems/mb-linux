@@ -145,9 +145,10 @@ DEVICES += redswitch0,c,248,0
 DEVICES += ptp0,c,253,0
 
 # Add the Biamp SPI mailbox peripheral device node
-ifdef CONFIG_SPI_MAILBOX
 DEVICES += mailbox0,c,255,0
-endif
+
+# Add the Biamp legacy packet bridge device node
+DEVICES += legacy_bridge0,c,222,0
 
 # Add the Xilinx SPI Master peripheral device node
 ifdef CONFIG_XILINX_SPI
@@ -189,11 +190,11 @@ romfs:
 	$(ROMFSINST) -s /proc/mounts /etc/mtab
 	$(ROMFSINST) $(COMMON)/etc/inetd.conf /etc/inetd.conf
 	$(ROMFSINST) $(COMMON)/etc/rc/hostname /etc/init.d/hostname
-	$(ROMFSINST) -s /etc/init.d/hostname /etc/rc.d/S30hostname
-	$(ROMFSINST) $(COMMON)/etc/rc/network /etc/init.d/network
-	$(ROMFSINST) -s /etc/init.d/network /etc/rc.d/S40network
+	$(ROMFSINST) -s /etc/init.d/hostname /etc/rc.d/S10hostname
 	$(ROMFSINST) $(COMMON)/etc/rc/mountfs /etc/init.d/mountfs
-	$(ROMFSINST) -s /etc/init.d/mountfs /etc/rc.d/S50mountfs
+	$(ROMFSINST) -s /etc/init.d/mountfs /etc/rc.d/S20mountfs
+	$(ROMFSINST) $(COMMON)/etc/rc/network /etc/init.d/network
+	$(ROMFSINST) -s /etc/init.d/network /etc/rc.d/S30network
 	$(ROMFSINST) $(COMMON)/etc/avahi-daemon.conf /etc/avahi.orig/avahi-daemon.conf
 	$(ROMFSINST) $(COMMON)/etc/avahi-autoipd.action /etc/avahi.orig/avahi-autoipd.action
 	$(ROMFSINST) $(COMMON)/etc/rc/avahi-autoipd-wrapper /bin/avahi-autoipd-wrapper
@@ -274,7 +275,7 @@ endif
 ifdef CONFIG_NET
 
 # setup /etc/init.d/network and other network-related files
-	$(ROMFSINST) -s /etc/init.d/network /etc/rc.d/S40network
+#	$(ROMFSINST) -s /etc/init.d/network /etc/rc.d/S40network
 	$(ROMFSINST) ../../Generic/romfs/etc/services /etc/services
 endif
 	# Ensure init.d scripts are executable

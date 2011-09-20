@@ -37,11 +37,11 @@
 
 
 /* Driver name and the revision range of hardware expected.
- * This driver will work with revision 1.1 only.
+ * This driver will work with revisions 1.3 - 1.5 only.
  */
 #define DRIVER_NAME "labx_audio_packetizer"
 #define DRIVER_VERSION_MIN  0x13
-#define DRIVER_VERSION_MAX  0x13
+#define DRIVER_VERSION_MAX  0x15
 
 /* Instances before the extended capabilities version typically had
  * 32 stream slots maximum
@@ -92,10 +92,79 @@ static void enable_packetizer(struct audio_packetizer *packetizer) {
   XIo_Out32(REGISTER_ADDRESS(packetizer, CONTROL_REG), controlRegister);
 }
 
+static int32_t set_output_enabled(struct audio_packetizer *packetizer,
+                                  uint32_t whichOutput, 
+                                  uint32_t enable) {
+  uint32_t outputMask;
+  uint32_t controlRegister;
+
+  /* Sanity-check the whichOutput parameter */
+  if(whichOutput >= packetizer->capabilities.numOutputs) {
+    return(-EINVAL);
+  }
+
+  /* Enable or disable the requested output in the control register */
+  outputMask = (OUTPUT_A_ENABLE << whichOutput);
+  controlRegister = XIo_In32(REGISTER_ADDRESS(packetizer, CONTROL_REG));
+  if(enable == PACKETIZER_OUTPUT_ENABLE) {
+    controlRegister |= outputMask;
+  } else controlRegister &= ~outputMask;
+  XIo_Out32(REGISTER_ADDRESS(packetizer, CONTROL_REG), controlRegister);
+
+  return 0;
+}
+
+/* Configures a clock domain, including whether it is enabled */
+static void configure_clock_domain(struct audio_packetizer *packetizer, 
+                                   ClockDomainSettings *clockDomainSettings) {
+
+  uint32_t controlRegister;
+
+  DBG("Configure clock domain: sytInterval %d, enabled %d\n", clockDomainSettings->sytInterval, (int)clockDomainSettings->enabled);
+
+  /* Set the timestamp interval, then enable or disable since we need to enable
+   * last (it doesn't really matter if we disable last or not.)
+   *
+   * Actually use the SYT interval setting minus one, as the hardware uses this
+   * as a terminal count value.
+   */
+  XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(packetizer, clockDomainSettings->clockDomain, 
+                                          TS_INTERVAL_REG),
+            (clockDomainSettings->sytInterval - 1));
+
+  /* Set the timestamp capture edge for audio samples. TODO: This should really
+   * be a per-clock-domain setting, but isn't currently...
+   */
+  controlRegister = XIo_In32(REGISTER_ADDRESS(packetizer, CONTROL_REG));
+  if (clockDomainSettings->sampleEdge == DOMAIN_SAMPLE_EDGE_RISING) {
+    controlRegister |= SAMPLE_RISING_EDGE;
+  } else {
+    controlRegister &= ~SAMPLE_RISING_EDGE;
+  }
+  XIo_Out32(REGISTER_ADDRESS(packetizer, CONTROL_REG), controlRegister);
+
+  /* Enable the clock domain */
+  XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(packetizer, clockDomainSettings->clockDomain,
+                                          DOMAIN_ENABLE_REG),
+            ((clockDomainSettings->enabled != 0) ? DOMAIN_ENABLED : DOMAIN_DISABLED));
+}
+
 /* Resets the state of the passed instance */
 static void reset_packetizer(struct audio_packetizer *packetizer) {
+  ClockDomainSettings clockDomainSettings;
+  uint32_t domainIndex;
+
   /* Disable the instance, and wipe its registers */
   disable_packetizer(packetizer);
+  set_output_enabled(packetizer, PACKETIZER_OUTPUT_A, false);
+  set_output_enabled(packetizer, PACKETIZER_OUTPUT_B, false);
+
+  /* Disable all of the clock domains */
+  clockDomainSettings.enabled = false;
+  for(domainIndex = 0; domainIndex < packetizer->capabilities.maxClockDomains; domainIndex++) {
+    clockDomainSettings.clockDomain = domainIndex;
+    configure_clock_domain(packetizer, &clockDomainSettings);
+  }
 }
 
 /* Configures the credit-based shaper stage */
@@ -131,28 +200,6 @@ static void configure_shaper(struct audio_packetizer *packetizer,
     controlRegister &= ~SHAPER_ENABLE;
   }
   XIo_Out32(REGISTER_ADDRESS(packetizer, CONTROL_REG), controlRegister);
-}
-
-static int32_t set_output_enabled(struct audio_packetizer *packetizer,
-                                  uint32_t whichOutput, 
-                                  uint32_t enable) {
-  uint32_t outputMask;
-  uint32_t controlRegister;
-
-  /* Sanity-check the whichOutput parameter */
-  if(whichOutput >= packetizer->capabilities.numOutputs) {
-    return(-EINVAL);
-  }
-
-  /* Enable or disable the requested output in the control register */
-  outputMask = (OUTPUT_A_ENABLE << whichOutput);
-  controlRegister = XIo_In32(REGISTER_ADDRESS(packetizer, CONTROL_REG));
-  if(enable == OUTPUT_ENABLE) {
-    controlRegister |= outputMask;
-  } else controlRegister &= ~outputMask;
-  XIo_Out32(REGISTER_ADDRESS(packetizer, CONTROL_REG), controlRegister);
-
-  return 0;
 }
 
 /* Waits for a synchronized write to commit, using either polling or
@@ -308,41 +355,6 @@ static int32_t set_start_vector(struct audio_packetizer *packetizer, uint32_t st
   return(await_synced_write(packetizer));
 }
 
-/* Configures a clock domain, including whether it is enabled */
-static void configure_clock_domain(struct audio_packetizer *packetizer, 
-                                   ClockDomainSettings *clockDomainSettings) {
-
-  uint32_t controlRegister;
-
-  DBG("Configure clock domain: sytInterval %d, enabled %d\n", clockDomainSettings->sytInterval, (int)clockDomainSettings->enabled);
-
-  /* Set the timestamp interval, then enable or disable since we need to enable
-   * last (it doesn't really matter if we disable last or not.)
-   *
-   * Actually use the SYT interval setting minus one, as the hardware uses this
-   * as a terminal count value.
-   */
-  XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(packetizer, clockDomainSettings->clockDomain, 
-                                          TS_INTERVAL_REG),
-            (clockDomainSettings->sytInterval - 1));
-
-  /* Set the timestamp capture edge for audio samples. TODO: This should really
-   * be a per-clock-domain setting, but isn't currently...
-   */
-  controlRegister = XIo_In32(REGISTER_ADDRESS(packetizer, CONTROL_REG));
-  if (clockDomainSettings->sampleEdge == DOMAIN_SAMPLE_EDGE_RISING) {
-    controlRegister |= SAMPLE_RISING_EDGE;
-  } else {
-    controlRegister &= ~SAMPLE_RISING_EDGE;
-  }
-  XIo_Out32(REGISTER_ADDRESS(packetizer, CONTROL_REG), controlRegister);
-
-  /* Enable the clock domain */
-  XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(packetizer, clockDomainSettings->clockDomain,
-                                          DOMAIN_ENABLE_REG),
-            ((clockDomainSettings->enabled != 0) ? DOMAIN_ENABLED : DOMAIN_DISABLED));
-}
-
 /*
  * Sets the presentation time offset applied to all media packets produced by
  * the passed packetizer.
@@ -368,7 +380,7 @@ static irqreturn_t labx_audio_packetizer_interrupt(int irq, void *dev_id) {
   maskedFlags &= irqMask;
   XIo_Out32(REGISTER_ADDRESS(packetizer, IRQ_FLAGS_REG), maskedFlags);
 
-  /* Detect the timer IRQ */
+  /* Detect the synchronized write IRQ */
   if((maskedFlags & SYNC_IRQ) != 0) {
     /* Wake up all threads waiting for a synchronization event */
     wake_up_interruptible(&(packetizer->syncedWriteQueue));
@@ -425,6 +437,9 @@ static int audio_packetizer_open(struct inode *inode, struct file *filp)
     packetizer->opened = true;
   }
 
+  /* Ensure the packetizer is reset */
+  reset_packetizer(packetizer);
+
   /* Invoke the open() operation on the derived driver, if there is one */
   if((packetizer->derivedFops != NULL) && 
      (packetizer->derivedFops->open != NULL)) {
@@ -442,6 +457,9 @@ static int audio_packetizer_release(struct inode *inode, struct file *filp)
   struct audio_packetizer *packetizer = (struct audio_packetizer*)filp->private_data;
   unsigned long flags;
 
+  /* Ensure the packetizer is reset */
+  reset_packetizer(packetizer);
+
   preempt_disable();
   spin_lock_irqsave(&packetizer->mutex, flags);
   packetizer->opened = false;
@@ -458,6 +476,7 @@ static int audio_packetizer_release(struct inode *inode, struct file *filp)
 }
 
 /* Buffer for storing configuration words */
+#define MAX_CONFIG_WORDS 1024
 static uint32_t configWords[MAX_CONFIG_WORDS];
 
 /* I/O control operations for the driver */
@@ -479,17 +498,37 @@ static long audio_packetizer_ioctl(struct file *filp,
 
   case IOC_LOAD_DESCRIPTOR:
     {
-      ConfigWords descriptor;
+      ConfigWords userDescriptor;
+      ConfigWords localDescriptor;
 
-      if(copy_from_user(&descriptor, (void __user*)arg, sizeof(descriptor)) != 0) {
+      if(copy_from_user(&userDescriptor, (void __user*)arg, sizeof(userDescriptor)) != 0) {
         return(-EFAULT);
       }
-      if(copy_from_user(configWords, (void __user*)descriptor.configWords, 
-                        (descriptor.numWords * sizeof(uint32_t))) != 0) {
-        return(-EFAULT);
+
+      /* Sanity-check the number of words against our maximum */
+      if((userDescriptor.offset + userDescriptor.numWords) > 
+         packetizer->capabilities.maxInstructions) {
+        return(-ERANGE);
       }
-      descriptor.configWords = configWords;
-      returnValue = load_descriptor(packetizer, &descriptor);
+
+      localDescriptor.offset          = userDescriptor.offset;
+      localDescriptor.interlockedLoad = userDescriptor.interlockedLoad;
+      localDescriptor.loadFlags       = userDescriptor.loadFlags;
+      localDescriptor.configWords     = configWords;
+      while(userDescriptor.numWords > 0) {
+        /* Load in chunks, never exceeding our local buffer size */
+        localDescriptor.numWords = ((userDescriptor.numWords > MAX_CONFIG_WORDS) ?
+                                    MAX_CONFIG_WORDS : userDescriptor.numWords);
+        if(copy_from_user(configWords, (void __user*)userDescriptor.configWords, 
+                          (localDescriptor.numWords * sizeof(uint32_t))) != 0) {
+          return(-EFAULT);
+        }
+        returnValue                 = load_descriptor(packetizer, &localDescriptor);
+        userDescriptor.configWords += localDescriptor.numWords;
+        localDescriptor.offset     += localDescriptor.numWords;
+        userDescriptor.numWords    -= localDescriptor.numWords;
+        if(returnValue < 0) break;
+      }
     }
     break;
 
@@ -502,13 +541,27 @@ static long audio_packetizer_ioctl(struct file *filp,
       if(copy_from_user(&userDescriptor, (void __user*)arg, sizeof(userDescriptor)) != 0) {
         return(-EFAULT);
       }
-      localDescriptor.offset = userDescriptor.offset;
-      localDescriptor.numWords = userDescriptor.numWords;
+
+      /* Sanity-check the number of words against our maximum */
+      if((userDescriptor.offset + userDescriptor.numWords) > 
+         packetizer->capabilities.maxInstructions) {
+        return(-ERANGE);
+      }
+
+      localDescriptor.offset      = userDescriptor.offset;
       localDescriptor.configWords = configWords;
-      copy_descriptor(packetizer, &localDescriptor);
-      if(copy_to_user((void __user*)userDescriptor.configWords, configWords, 
-                      (userDescriptor.numWords * sizeof(uint32_t))) != 0) {
-        return(-EFAULT);
+      while(userDescriptor.numWords > 0) {
+        /* Transfer in chunks, never exceeding our local buffer size */
+        localDescriptor.numWords = ((userDescriptor.numWords > MAX_CONFIG_WORDS) ? 
+                                    MAX_CONFIG_WORDS : userDescriptor.numWords);
+        copy_descriptor(packetizer, &localDescriptor);
+        if(copy_to_user((void __user*)userDescriptor.configWords, configWords, 
+                        (localDescriptor.numWords * sizeof(uint32_t))) != 0) {
+          return(-EFAULT);
+        }
+        userDescriptor.configWords += localDescriptor.numWords;
+        localDescriptor.offset     += localDescriptor.numWords;
+        userDescriptor.numWords    -= localDescriptor.numWords;
       }
     }
     break;
@@ -582,6 +635,7 @@ static long audio_packetizer_ioctl(struct file *filp,
     {
       uint32_t presentationOffset;
 
+      printk("Warning: labx_audio_packetizer.IOC_SET_PRESENTATION_OFFSET is deprecated!\n");
       if(copy_from_user(&presentationOffset, (void __user*)arg, sizeof(presentationOffset)) != 0) {
         return(-EFAULT);
       }
@@ -842,6 +896,9 @@ static int __devexit audio_packetizer_of_remove(struct platform_device *dev)
  */
 static struct of_device_id packetizer_of_match[] = {
   { .compatible = "xlnx,labx-audio-packetizer-1.00.a", },
+  { .compatible = "xlnx,labx-audio-packetizer-1.01.a", },
+  { .compatible = "xlnx,labx-audio-packetizer-1.02.a", },
+  { .compatible = "xlnx,labx-audio-packetizer-1.03.a", },
   { /* end of list */ },
 };
 
