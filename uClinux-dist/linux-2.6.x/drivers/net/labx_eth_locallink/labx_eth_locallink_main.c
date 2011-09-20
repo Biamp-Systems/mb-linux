@@ -242,18 +242,7 @@ static spinlock_t XTE_spinlock = SPIN_LOCK_UNLOCKED;
 static spinlock_t XTE_tx_spinlock = SPIN_LOCK_UNLOCKED;
 static spinlock_t XTE_rx_spinlock = SPIN_LOCK_UNLOCKED;
 
-/*
- * ethtool has a status reporting feature where we can report any sort of
- * status information we'd like. This is the list of strings used for that
- * status reporting. ETH_GSTRING_LEN is defined in ethtool.h
- */
-static char xenet_ethtool_gstrings_stats[][ETH_GSTRING_LEN] = {
-	"txpkts", "txdropped", "txerr", "txfifoerr",
-	"rxpkts", "rxdropped", "rxerr", "rxfifoerr",
-	"rxrejerr", "max_frags", "tx_hw_csums", "rx_hw_csums",
-};
 
-#define XENET_STATS_LEN sizeof(xenet_ethtool_gstrings_stats) / ETH_GSTRING_LEN
 
 /* Helper function to determine if a given XLlTemac error warrants a reset. */
 extern inline int status_requires_reset(int s)
@@ -994,9 +983,9 @@ static void xenet_set_multicast_list(struct net_device *dev)
 
 	u32 Options = labx_XLlTemac_GetOptions(&lp->Emac);
 
-        if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > 6)
-        {
-                dev->flags |= IFF_PROMISC;
+	if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > 6)
+	{
+		dev->flags |= IFF_PROMISC;
 		Options |= XTE_PROMISC_OPTION;
 	}
 	else
@@ -1009,7 +998,7 @@ static void xenet_set_multicast_list(struct net_device *dev)
 	(int) _XLlTemac_SetOptions(&lp->Emac, Options);
 	(int) _XLlTemac_ClearOptions(&lp->Emac, ~Options);
 
-	labx_eth_UpdateMacFilters(&lp->Emac);
+	labx_eth_ll_UpdateMacFilters(&lp->Emac);
 
 	if (netdev_mc_count(dev) > 0 && netdev_mc_count(dev) <= 6)
 	{
@@ -2219,7 +2208,6 @@ static void free_descriptor_skb(struct net_device *dev)
 
 
 
-
 static void disp_bd_ring(XLlDma_BdRing *bd_ring)
 {
 	int num_bds = bd_ring->AllCnt;
@@ -2280,7 +2268,6 @@ static void disp_bd_ring(XLlDma_BdRing *bd_ring)
 	}
 	printk("------------------------------------------------------------------------------\n");
 }
-
 
 
 
@@ -2707,7 +2694,6 @@ static int xtenet_setup(
 
 	ndev->watchdog_timeo = TX_TIMEOUT;
 	ndev->ethtool_ops = &labx_ethtool_ops;
-
 	/* init the stats */
 	lp->max_frags_in_a_packet = 0;
 	lp->tx_hw_csums = 0;
