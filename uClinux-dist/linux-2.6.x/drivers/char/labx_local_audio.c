@@ -105,10 +105,10 @@ static int labx_local_audio_release(struct inode *inode, struct file *filp) {
 }
 
 static long labx_local_audio_ioctl_cdev(struct file *filp,
-					unsigned int command, unsigned long arg)
+                                       unsigned int command, unsigned long arg)
 {
   struct labx_local_audio_pdev *local_audio_pdev = (struct labx_local_audio_pdev*)filp->private_data;
-  int returnValue = 0;
+  long returnValue = 0;
 
   switch(command) {
   case IOC_LA_SET_CHANNEL_MAPPING:
@@ -209,8 +209,8 @@ static long labx_local_audio_ioctl_cdev(struct file *filp,
 }
 
 static const struct file_operations labx_local_audio_fops = {
-  .open = labx_local_audio_open,
-  .release = labx_local_audio_release,
+  .open           = labx_local_audio_open,
+  .release        = labx_local_audio_release,
   .unlocked_ioctl = labx_local_audio_ioctl_cdev,
 };
 
@@ -385,7 +385,7 @@ static int labx_local_audio_of_probe(struct platform_device *ofdev, const struct
   /* Check the interface type to see if a DMA exists */
   has_serializer = get_u32(ofdev, "xlnx,has-serializer");
   if (has_serializer)
-    interfaceType = (char *) of_get_property(ofdev->node, "xlnx,interface-type", NULL);
+    interfaceType = (char *) of_get_property(ofdev->dev.of_node, "xlnx,interface-type", NULL);
   else
     interfaceType = LA_DMA_INTERFACE_EXTERNAL;
   

@@ -13,6 +13,8 @@
 
 #ifndef __LINUX_SPI_XILINX_SPI_H
 #define __LINUX_SPI_XILINX_SPI_H
+#include <linux/spi/spi.h>
+//#define SPI_SELECT_PULSEWIDTH       3       /* mS slave select pulse width */
 
 
 #include <linux/spi/spi.h>
@@ -33,8 +35,6 @@ struct xspi_platform_data {
 	u8 num_devices;
 };
 
-//#define SPI_SELECT_PULSEWIDTH       3       /* mS slave select pulse width */
-
 /* Strobe slave select: Generate an active pulse on the device's slave select
  * line for SPI_SELECT_PULSEWIDTH mS, or if SPI_SELECT_PULSEWIDTH is undefined,
  * for about 100 nS.
@@ -48,3 +48,4 @@ void spi_strobe_ssel(struct spi_device *spi);
 void spi_reset_transmit_buffer(struct spi_device *spi);
 
 #endif /* __LINUX_SPI_XILINX_SPI_H */
+

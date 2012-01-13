@@ -77,16 +77,16 @@ static int labx_dma_release_cdev(struct inode *inode, struct file *filp) {
   return(labx_dma_release(&dma_pdev->dma));
 }
 
-static long labx_dma_ioctl_cdev(struct file *filp, unsigned int command, unsigned long arg)
-{
+static int labx_dma_ioctl_cdev(struct file *filp,
+                               unsigned int command, unsigned long arg) {
 	struct labx_dma_pdev *dma_pdev = (struct labx_dma_pdev*)filp->private_data;
 
 	return labx_dma_ioctl(&dma_pdev->dma, command, arg);
 }
 
 static const struct file_operations labx_dma_fops = {
-	.open = labx_dma_open,
-    .release = labx_dma_release_cdev,
+	.open           = labx_dma_open_cdev,
+	.release        = labx_dma_release_cdev,
 	.unlocked_ioctl = labx_dma_ioctl_cdev,
 };
 
@@ -138,7 +138,7 @@ static int labx_dma_of_probe(struct platform_device *ofdev, const struct of_devi
 	//printk("DMA Virtual %p\n", dma_pdev->dma.virtualAddress);
 
     /* Obtain the interrupt request number for the instance */
-    ret = of_irq_to_resource(ofdev->node, 0, irq);
+    ret = of_irq_to_resource(ofdev->dev.of_node, 0, irq);
     if(ret == NO_IRQ) {
       /* No IRQ was defined; indicate as much */
       irqParam = DMA_NO_IRQ_SUPPLIED;
@@ -159,7 +159,7 @@ static int labx_dma_of_probe(struct platform_device *ofdev, const struct of_devi
 	dev_set_drvdata(dma_pdev->miscdev.this_device, dma_pdev);
 
     /* See if the device tree has a valid parameter to tell us our microcode size */
-    int32Ptr = (int32_t *) of_get_property(ofdev->node, "xlnx,microcode-words", NULL);
+    int32Ptr = (int32_t *) of_get_property(ofdev->dev.of_node, "xlnx,microcode-words", NULL);
     if(int32Ptr == NULL) {
       /* Allow the DMA driver to infer its microcode size */
       microcodeWords = DMA_UCODE_SIZE_UNKNOWN;

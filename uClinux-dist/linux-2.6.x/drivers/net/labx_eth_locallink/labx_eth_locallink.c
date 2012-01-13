@@ -621,12 +621,15 @@ void labx_eth_ll_UpdateMacFilters(XLlTemac *InstancePtr)
 
 	/* Allow multicasts if configured to do so */
 	if (InstancePtr->Options & XTE_MULTICAST_OPTION) {
-		struct dev_mc_list *dmi = InstancePtr->dev->mc_list;
-                int i;
+		struct netdev_hw_addr *ha;
 
-                for (i=2; (i<(InstancePtr->dev->mc_count+2)) && (i<InstancePtr->MacMatchUnits); i++) {
-			ConfigureMacFilter(InstancePtr, i, dmi->da_addr, MAC_MATCH_ALL);
-                        dmi = dmi->next;
+		i = 2;
+		netdev_for_each_mc_addr(ha, InstancePtr->dev) {
+			if (i>=InstancePtr->MacMatchUnits) {
+				break;
+			}
+			ConfigureMacFilter(InstancePtr, i, ha->addr, MAC_MATCH_ALL);
+                        i++;
                 }
 
 	} else {

@@ -361,9 +361,11 @@ static inline u16 _XLlTemac_GetOperatingSpeed(XLlTemac *InstancePtr)
 {
 	u16 speed;
 	unsigned long flags;
+
 	spin_lock_irqsave(&XTE_spinlock, flags);
 	speed = labx_XLlTemac_GetOperatingSpeed(InstancePtr);
 	spin_unlock_irqrestore(&XTE_spinlock, flags);
+
 	return speed;
 }
 
@@ -981,9 +983,9 @@ static void xenet_set_multicast_list(struct net_device *dev)
 
 	u32 Options = labx_XLlTemac_GetOptions(&lp->Emac);
 
-  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > 6)
-  {
-    dev->flags |= IFF_PROMISC;
+	if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > 6)
+	{
+		dev->flags |= IFF_PROMISC;
 		Options |= XTE_PROMISC_OPTION;
 	}
 	else
@@ -995,18 +997,17 @@ static void xenet_set_multicast_list(struct net_device *dev)
 	_XLlTemac_Stop(&lp->Emac);
 	(int) _XLlTemac_SetOptions(&lp->Emac, Options);
 	(int) _XLlTemac_ClearOptions(&lp->Emac, ~Options);
-  
+
 	labx_eth_ll_UpdateMacFilters(&lp->Emac);
-  
+
 	if (netdev_mc_count(dev) > 0 && netdev_mc_count(dev) <= 6)
 	{
 		// TODO: Program multicast filters
 	}
 
 	if (dev->flags & IFF_UP)
-	{ 
+	{
 		_XLlTemac_Start(&lp->Emac);
-
 	}
 }
 
@@ -1063,7 +1064,7 @@ static int xenet_FifoSend(struct sk_buff *skb, struct net_device *dev)
 	skb_frag_t *frag;
 	int i;
 	void *virt_addr;
-	
+
 	total_len = skb_headlen(skb);
 
 	frag = &skb_shinfo(skb)->frags[0];
@@ -1116,7 +1117,6 @@ static void FifoSendHandler(struct net_device *dev)
 
 	spin_lock_irqsave(&XTE_tx_spinlock, flags);
 	lp = netdev_priv(dev);
-	if (lp->cur_speed == 10000) printk("Yi Cao: tx packets: %d \n", lp->stats.tx_packets);
 	lp->stats.tx_packets++;
 
 	/*Send out the deferred skb and wake up send queue if a deferred skb exists */
@@ -1139,8 +1139,6 @@ static void FifoSendHandler(struct net_device *dev)
 
 		fifo_free_bytes = XLlFifo_TxVacancy(&lp->Fifo) * 4;
 		if (fifo_free_bytes < total_len) {
-  		
-  		if(lp->cur_speed == 10000) printk("Yi Cao: fifo_free_bytes < total_len.....\n");
 			/* If still no room for the deferred packet, return */
 			spin_unlock_irqrestore(&XTE_tx_spinlock, flags);
 			return;
@@ -1162,7 +1160,6 @@ static void FifoSendHandler(struct net_device *dev)
 		dev_kfree_skb(skb);	/* free skb */
 		lp->deferred_skb = NULL;
 		lp->stats.tx_packets++;
-		if(lp->cur_speed == 10000) printk("Yi Cao: tx packets at the end: %d\n", lp->stats.tx_packets);
 		lp->stats.tx_bytes += total_len;
 		dev->trans_start = jiffies;
 		netif_wake_queue(dev);	/* wake up send queue */
@@ -1529,7 +1526,6 @@ static void FifoRecvHandler(unsigned long p)
 
 		/* Read the packet data */
 		XLlFifo_Read(&lp->Fifo, skb->data, len);
-		if(lp->cur_speed == 10000) printk("Yi Cao: rx packets: %d\n", lp->stats.rx_packets);
 		lp->stats.rx_packets++;
 		lp->stats.rx_bytes += len;
 
@@ -2295,7 +2291,7 @@ static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	u32 *dma_int_mask_ptr;
 
 	switch (cmd) {
-  	
+
 	case SIOCGMIIPHY:	/* Get address of GMII PHY in use. */
 	case SIOCGMIIREG:	/* Read GMII PHY register. */
 	case SIOCSMIIREG:	/* Write GMII PHY register. */
@@ -2559,7 +2555,8 @@ static int xtenet_setup(
 	Temac_Config.LLDevBaseAddress = pdata->ll_dev_baseaddress;
 	Temac_Config.PhyType = pdata->phy_type;
 	Temac_Config.PhyAddr = pdata->phy_addr;
-  Temac_Config.MacWidth = pdata->mac_width;
+	Temac_Config.MacWidth = pdata->mac_width;
+
 	/* Get the virtual base address for the device */
 	virt_baddr = (u32) ioremap(r_mem->start, r_mem->end - r_mem->start + 1);
 	if (0 == virt_baddr) {
@@ -2696,8 +2693,7 @@ static int xtenet_setup(
 	}
 
 	ndev->watchdog_timeo = TX_TIMEOUT;
-  ndev->ethtool_ops = &labx_ethtool_ops;
-  
+	ndev->ethtool_ops = &labx_ethtool_ops;
 	/* init the stats */
 	lp->max_frags_in_a_packet = 0;
 	lp->tx_hw_csums = 0;
@@ -2860,7 +2856,6 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
 	struct device_node *mdio_controller_node;
 	struct device_node *mdio_controller_node_eth;
 	u32 *dcrreg_property;
-	u32 phy_addr;
 	int i;
 
 	printk(KERN_INFO "Device Tree Probing \'%s\'\n",ofdev->dev.of_node->name);
@@ -2886,11 +2881,11 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
 
 	pdata_struct.tx_csum  = get_u32(ofdev, "xlnx,txcsum");
 	pdata_struct.rx_csum  = get_u32(ofdev, "xlnx,rxcsum");
-  pdata_struct.mac_width = get_u32(ofdev, "xlnx,mac-port-width");
+	pdata_struct.mac_width = get_u32(ofdev, "xlnx,mac-port-width");
+
 	/* Connected PHY information */
 	pdata_struct.phy_type = get_u32(ofdev, "xlnx,phy-type");
-	pdata_struct.phy_addr = get_u32(ofdev, "xlnx,phy-addr"); //Yi: why don't we have this before?
-	phy_addr              = get_u32(ofdev, "xlnx,phy-addr");
+	pdata_struct.phy_addr = get_u32(ofdev, "xlnx,phy-addr");
 
 	pdata->phy_name[0] = '\0';
 	mdio_controller_handle = of_get_property(ofdev->dev.of_node, "phy-mdio-controller", NULL);
@@ -2908,7 +2903,7 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
 				dev_warn(&ofdev->dev, "MDIO connection node has no ethernet child.\n");
 			} else {
 				rc = of_address_to_resource(mdio_controller_node_eth, 0, &r_connected_mdio_mem_struct);
-				snprintf(pdata->phy_name, 20, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, phy_addr);
+				snprintf(pdata->phy_name, 20, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, pdata_struct.phy_addr);
 				printk("%s:phy_name: %s\n",__func__, pdata->phy_name);
 			}
 		}

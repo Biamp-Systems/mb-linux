@@ -818,7 +818,7 @@ static void xenet_set_multicast_list(struct net_device *dev)
 
   if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > maxMulticast) {
     if (netdev_mc_count(dev) > maxMulticast) {
-      printk("Switching to promisc mode (too many multicast addrs: %d > %d)\n", dev->mc_count, maxMulticast);
+      printk("Switching to promisc mode (too many multicast addrs: %d > %d)\n", netdev_mc_count(dev), maxMulticast);
     }
     dev->flags |= IFF_PROMISC;
     Options |= XTE_PROMISC_OPTION;
@@ -1619,6 +1619,7 @@ static int xtenet_setup(struct device *dev,
   Temac_Config.PhyType = pdata->phy_type;
   Temac_Config.PhyAddr = pdata->phy_addr;
   Temac_Config.MacWidth = pdata->mac_width;
+
   /* Request the memory range for the device */
   address_size = (r_mem->end - r_mem->start + 1);
   if(request_mem_region(r_mem->start, address_size, "labx-ethernet") == NULL) {
@@ -1692,7 +1693,7 @@ static int xtenet_setup(struct device *dev,
   Write_Fifo32(lp->Emac, FIFO_RDFR_OFFSET, FIFO_RESET_MAGIC);
 
   /* initialize the netdev structure */
-ndev->flags |= IFF_MULTICAST;
+  ndev->flags |= IFF_MULTICAST;
   ndev->watchdog_timeo = TX_TIMEOUT;
   ndev->netdev_ops = &labx_net_device_ops;
   ndev->ethtool_ops = &labx_ethtool_ops;
@@ -1834,7 +1835,6 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
   int rc = 0;
   const phandle *mdio_controller_handle;
   struct device_node *mdio_controller_node;
-  u32 phy_addr;
   int i;
 
   printk(KERN_INFO "Device Tree Probing \'%s\'\n",ofdev->dev.of_node->name);
@@ -1873,8 +1873,7 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
   pdata_struct.mac_width = get_u32(ofdev, "xlnx,mac-port-width");
   /* Connected PHY information */
   pdata_struct.phy_type = get_u32(ofdev, "xlnx,phy-type");
-  pdata_struct.phy_addr = get_u32(ofdev, "xlnx,phy-addr"); //Yi: why don't we have this before?
-  phy_addr              = get_u32(ofdev, "xlnx,phy-addr");
+  pdata_struct.phy_addr = get_u32(ofdev, "xlnx,phy-addr");
 
   pdata->phy_name[0] = '\0';
   mdio_controller_handle = of_get_property(ofdev->dev.of_node, "phy-mdio-controller", NULL);
@@ -1889,7 +1888,7 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
        * it is not a compound device.
        */
       rc = of_address_to_resource(mdio_controller_node, 0, &r_connected_mdio_mem_struct);
-      snprintf(pdata->phy_name, 20, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, phy_addr);
+      snprintf(pdata->phy_name, 20, MDIO_OF_BUSNAME_FMT ":%02x", (u32)r_connected_mdio_mem_struct.start, pdata_struct.phy_addr);
       printk("%s:phy_name: %s\n",__func__, pdata->phy_name);
     }
   }

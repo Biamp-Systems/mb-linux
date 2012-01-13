@@ -108,9 +108,9 @@ static inline int phy_aneg_done(struct phy_device *phydev)
 
 	if (strcmp(phydev->drv->name,"Puma AEL2005")==0)
 	{
-  	return 1;
-  }
-  
+		return 1;
+	}
+
 	retval = phy_read(phydev, MII_BMSR);
 
 	return (retval < 0) ? retval : (retval & BMSR_ANEGCOMPLETE);
@@ -260,7 +260,7 @@ int phy_ethtool_sset(struct phy_device *phydev, struct ethtool_cmd *cmd)
 
 	if (cmd->autoneg == AUTONEG_DISABLE &&
 	    ((cmd->speed != SPEED_10000 &&
-          cmd->speed != SPEED_1000 &&
+	      cmd->speed != SPEED_1000 &&
 	      cmd->speed != SPEED_100 &&
 	      cmd->speed != SPEED_10) ||
 	     (cmd->duplex != DUPLEX_HALF &&
@@ -798,7 +798,7 @@ void phy_state_machine(struct work_struct *work)
 			if (err < 0)
 			{ 
 				break;
-      }
+			}
 			/* If the link is down, give up on
 			 * negotiation for now */
 			if (!phydev->link) {
@@ -813,7 +813,7 @@ void phy_state_machine(struct work_struct *work)
 			if (err < 0)
 			{
 				break;
-      }
+			}
 			/* If AN is done, we're running */
 			if (err > 0) {
 				phydev->state = PHY_RUNNING;

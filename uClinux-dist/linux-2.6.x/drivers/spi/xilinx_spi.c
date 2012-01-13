@@ -77,6 +77,10 @@
 #define XSPI_INTR_RX_FULL		0x10	/* RxFIFO is full */
 #define XSPI_INTR_RX_OVERRUN		0x20	/* RxFIFO was overrun */
 #define XSPI_INTR_TX_HALF_EMPTY		0x40	/* TxFIFO is half empty */
+
+/* The following bit is valid only in AXI Quad SPI */
+#define XSP_INTR_CMD_ERR_MASK		0x2000  /* 'Invalid cmd' error */
+
 #define XSPI_INTR_SLAVE_SEL_ASSERT	0x80	/* In slave mode, slave select is asserted */
 #define XSPI_INTR_RX_NOT_EMPTY		0x100	/* RxFIFO has at least one word of data */
 
@@ -100,15 +104,17 @@ struct xilinx_spi {
 	u8 *rx_ptr;		/* pointer in the Tx buffer */
 	const u8 *tx_ptr;	/* pointer in the Rx buffer */
 	int remaining_bytes;	/* the number of bytes left to transfer */
-	int tx_len;		/* Length of data to transmit as slave */
-	u8 chip_select; /* Current chip select */
-	u8 slave_tx_buf[SPI_SLAVE_BUFSIZE]; /* Transmit buffer for slave transfers */
-	u8 slave_rx_buf[SPI_SLAVE_BUFSIZE]; /* Receive buffer for slave transfers */
 	u8 bits_per_word;
+	int cmd_err;		/* command error flag, in case of quad spi */
 	unsigned int (*read_fn) (void __iomem *);
 	void (*write_fn) (u32, void __iomem *);
 	void (*tx_fn) (struct xilinx_spi *);
 	void (*rx_fn) (struct xilinx_spi *);
+
+	int tx_len;		/* Length of data to transmit as slave */
+	u8 chip_select; /* Current chip select */
+	u8 slave_tx_buf[SPI_SLAVE_BUFSIZE]; /* Transmit buffer for slave transfers */
+	u8 slave_rx_buf[SPI_SLAVE_BUFSIZE]; /* Receive buffer for slave transfers */
 };
 
 static void xspi_write32(u32 val, void __iomem *addr)
@@ -156,6 +162,9 @@ static void xspi_rx8(struct xilinx_spi *xspi)
 		*xspi->rx_ptr = data & 0xff;
 		xspi->rx_ptr++;
 	}
+	#ifdef XSPI_DEBUG_REGIO
+	printk(KERN_DEBUG "%02x=>%p  ", data & 0xff, xspi->regs + XSPI_RXD_OFFSET);
+	#endif
 }
 
 static void xspi_rx16(struct xilinx_spi *xspi)
@@ -165,6 +174,9 @@ static void xspi_rx16(struct xilinx_spi *xspi)
 		*(u16 *)(xspi->rx_ptr) = data & 0xffff;
 		xspi->rx_ptr += 2;
 	}
+	#ifdef XSPI_DEBUG_REGIO
+	printk("%04x<=%p  ", data & 0xffff, xspi->regs + XSPI_RXD_OFFSET);
+	#endif
 }
 
 static void xspi_rx32(struct xilinx_spi *xspi)
@@ -174,6 +186,9 @@ static void xspi_rx32(struct xilinx_spi *xspi)
 		*(u32 *)(xspi->rx_ptr) = data;
 		xspi->rx_ptr += 4;
 	}
+	#ifdef XSPI_DEBUG_REGIO
+	printk("%08x<=%p  ", data, xspi->regs + XSPI_RXD_OFFSET);
+	#endif
 }
 
 void spi_strobe_ssel(struct spi_device *spi)
@@ -182,7 +197,7 @@ void spi_strobe_ssel(struct spi_device *spi)
 	volatile int i;
 	#endif
 	struct xilinx_spi *xspi = spi_master_get_devdata(spi->master);
-	spi_regw(xspi, XSPI_SSR_OFFSET, ~(1 << spi->chip_select));
+	xspi->write_fn(~(1 << spi->chip_select), xspi->regs + XSPI_SSR_OFFSET);
 	#ifdef SPI_SELECT_PULSEWIDTH
 	msleep(SPI_SELECT_PULSEWIDTH);
 	#else
@@ -190,7 +205,7 @@ void spi_strobe_ssel(struct spi_device *spi)
 		;
 	}
 	#endif
-	spi_regw(xspi, XSPI_SSR_OFFSET, ~0);
+	xspi->write_fn(~0, xspi->regs + XSPI_SSR_OFFSET);
 	return;
 }
 EXPORT_SYMBOL(spi_strobe_ssel);
@@ -249,7 +264,7 @@ static void xilinx_spi_chipselect(struct spi_device *spi, int is_on)
 			}
 		} else {
 			/* Deselect the slave on the SPI bus */
-		xspi->write_fn(0xffff, xspi->regs + XSPI_SSR_OFFSET);
+			xspi->write_fn(0xffff, xspi->regs + XSPI_SSR_OFFSET);
 		}
 	} else if (is_on == BITBANG_CS_ACTIVE) {
 		/* Set the SPI clock phase and polarity */
@@ -270,23 +285,27 @@ static void xilinx_spi_chipselect(struct spi_device *spi, int is_on)
 		 * frequency is not software programmable (the IP block design
 		 * parameter)
 		 */
+
 		/* Kill any pending SPI interrupts */
-		xspi->write_fn(xspi->read_fn(xspi->regs + XIPIF_V123B_IISR_OFFSET), xspi->regs + XIPIF_V123B_IISR_OFFSET);
+		xspi->write_fn(xspi->read_fn(xspi->regs + XIPIF_V123B_IISR_OFFSET),
+			xspi->regs + XIPIF_V123B_IISR_OFFSET);
 		if ((spi->mode & SPI_SLAVE) == 0) {
 			/* If master, and chip select is used, activate the chip select */
 			if (strobedelay == NULL) {
-				xspi->write_fn(xspi->regs + XSPI_SSR_OFFSET, ~(1 << spi->chip_select));
+				/* Activate the chip select */
+				xspi->write_fn(~(0x0001 << spi->chip_select),
+					xspi->regs + XSPI_SSR_OFFSET);
 			}
 			xspi->write_fn(xspi->read_fn(xspi->regs + XIPIF_V123B_IIER_OFFSET) &
-							~(XSPI_INTR_RX_NOT_EMPTY | XSPI_INTR_SLAVE_SEL_ASSERT),
-							xspi->regs + XIPIF_V123B_IIER_OFFSET);
+				~(XSPI_INTR_RX_NOT_EMPTY | XSPI_INTR_SLAVE_SEL_ASSERT),
+				xspi->regs + XIPIF_V123B_IIER_OFFSET);
 		} else {
 			/* Enable the receive not empty interrupt, which we use to determine
 			 * progress on the transaction.
 			 */
 			xspi->write_fn(xspi->read_fn(xspi->regs + XIPIF_V123B_IIER_OFFSET) |
-							(XSPI_INTR_RX_NOT_EMPTY | XSPI_INTR_SLAVE_SEL_ASSERT),
-							xspi->regs + XIPIF_V123B_IIER_OFFSET);
+				(XSPI_INTR_RX_NOT_EMPTY | XSPI_INTR_SLAVE_SEL_ASSERT),
+				xspi->regs + XIPIF_V123B_IIER_OFFSET);
 		}
 	}
 }
@@ -336,7 +355,7 @@ static int xilinx_spi_setup(struct spi_device *spi)
 
 static void xilinx_spi_fill_tx_fifo(struct xilinx_spi *xspi)
 {
-	u32 sr;
+	u8 sr;
 
 	/* Clear the Tx FIFO */
 	xspi->write_fn(xspi->read_fn(xspi->regs + XSPI_CR_OFFSET) | XSPI_CR_TXFIFO_RESET,
@@ -345,10 +364,17 @@ static void xilinx_spi_fill_tx_fifo(struct xilinx_spi *xspi)
 	/* Fill the Tx FIFO with as many bytes as possible */
 	sr = xspi->read_fn(xspi->regs + XSPI_SR_OFFSET);
 	while ((sr & XSPI_SR_TX_FULL_MASK) == 0 && xspi->remaining_bytes > 0) {
-		if (xspi->tx_ptr)
+		if (xspi->tx_ptr) {
+			#ifdef XSPI_DEBUG_FIFOIO
+			printk("[%02x]", *xspi->tx_ptr);
+			#endif
 			xspi->tx_fn(xspi);
-		else
+		} else {
+			#ifdef XSPI_DEBUG_FIFOIO
+			printk("[--]");
+			#endif
 			xspi->write_fn(0, xspi->regs + XSPI_TXD_OFFSET);
+		}
 		xspi->remaining_bytes -= xspi->bits_per_word / 8;
 		sr = xspi->read_fn(xspi->regs + XSPI_SR_OFFSET);
 	}
@@ -359,7 +385,8 @@ static void xspi_reset_transmit_buffer(struct xilinx_spi *xspi)
 	xspi->tx_ptr = xspi->slave_tx_buf;
 	xspi->remaining_bytes = xspi->tx_len;
 	/* Clear out old transmit contents */
-	spi_regw(xspi, XSPI_CR_OFFSET, spi_regr(xspi, XSPI_CR_OFFSET) | XSPI_CR_TXFIFO_RESET);
+	xspi->write_fn(xspi->read_fn(xspi->regs + XSPI_CR_OFFSET) |
+		XSPI_CR_TXFIFO_RESET, xspi->regs + XSPI_CR_OFFSET);
 	xilinx_spi_fill_tx_fifo(xspi);
 }
 
@@ -373,13 +400,13 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 {
 	struct xilinx_spi *xspi = spi_master_get_devdata(spi->master);
 	u32 ipif_ier;
-	u32 cr;
+	u16 cr;
 	int len = 0;
-
-	/* We get here with transmitter inhibited */
 
 	cr = xspi->read_fn(xspi->regs + XSPI_CR_OFFSET);
 	if (cr & XSPI_CR_MASTER_MODE) { /* We're a SPI master */
+		/* We get here with transmitter inhibited */
+
 		xspi->tx_ptr = t->tx_buf;
 		xspi->rx_ptr = t->rx_buf;
 		xspi->remaining_bytes = t->len;
@@ -387,11 +414,11 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 
 		xilinx_spi_fill_tx_fifo(xspi);
 
-		/* Enable the transmit empty interrupt, which we use to determine
-		 * progress on the transmission.
+		/* Enable the transmit empty and command error interrupts, which we use
+		 * to determine progress on the transmission.
 		 */
 		ipif_ier = xspi->read_fn(xspi->regs + XIPIF_V123B_IIER_OFFSET);
-		xspi->write_fn(ipif_ier | XSPI_INTR_TX_EMPTY,
+		xspi->write_fn(ipif_ier | XSPI_INTR_TX_EMPTY | XSP_INTR_CMD_ERR_MASK,
 			xspi->regs + XIPIF_V123B_IIER_OFFSET);
 
 		/* Start the transfer by not inhibiting the transmitter any longer */
@@ -401,8 +428,18 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 
 		wait_for_completion(&xspi->done);
 
-		/* Disable the transmit empty interrupt */
+		/* Disable the transmit empty and command error interrupts */
 		xspi->write_fn(ipif_ier, xspi->regs + XIPIF_V123B_IIER_OFFSET);
+
+		if (xspi->cmd_err) {
+			/* Disable the transmitter and reset the FIFOs */
+			xspi->write_fn(cr | XSPI_CR_TRANS_INHIBIT |
+					XSPI_CR_TXFIFO_RESET | XSPI_CR_RXFIFO_RESET,
+					xspi->regs + XSPI_CR_OFFSET);
+
+			xspi->cmd_err = 0;
+			return 0;
+		}
 		len = t->len - xspi->remaining_bytes;
 	} else { /* We're a SPI slave */
 		if (t->tx_buf != NULL) {
@@ -421,7 +458,7 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 		if (t->rx_buf != NULL) {
 			len = min((int)t->len, (int)(xspi->rx_ptr - xspi->slave_rx_buf));
 			/* Clear out old receive contents */
-			xspi->write_fn(cr | XSPI_CR_RXFIFO_RESET, xpsi->regs + XSPI_CR_OFFSET);
+			xspi->write_fn(cr | XSPI_CR_RXFIFO_RESET, xspi->regs + XSPI_CR_OFFSET);
 			memcpy(t->rx_buf, xspi->slave_rx_buf, len);
 			if (len < xspi->rx_ptr - xspi->slave_rx_buf) {
 				memcpy(xspi->slave_rx_buf, xspi->slave_rx_buf + len,
@@ -433,7 +470,6 @@ static int xilinx_spi_txrx_bufs(struct spi_device *spi, struct spi_transfer *t)
 	return len;
 }
 
-
 /* In single master mode, Tx FIFO Empty is the only interrupt we care about.
  * As a slave, Receive FIFO Not Empty and (possibly) Slave Sel Asserted interrupts used.
  * Receive FIFO Overrun, Transmit FIFO Underrun, Mode Fault, and Slave Mode
@@ -443,26 +479,33 @@ static irqreturn_t xilinx_spi_irq(int irq, void *dev_id)
 {
 	struct xilinx_spi *xspi = dev_id;
 	u32 ipif_isr;
-	u32 cr;
-	u32 sr;
+	u16 cr;
+	u8 sr;
 
 	/* Get the IPIF interrupts, and clear them immediately */
 	ipif_isr = xspi->read_fn(xspi->regs + XIPIF_V123B_IISR_OFFSET);
 	xspi->write_fn(ipif_isr, xspi->regs + XIPIF_V123B_IISR_OFFSET);
 
-	cr = spi_regr(xspi, XSPI_CR_OFFSET);
+	cr = xspi->read_fn(xspi->regs + XSPI_CR_OFFSET);
 
 	if (cr & XSPI_CR_MASTER_MODE) { /* We're a SPI master */
+
+		if (ipif_isr & XSP_INTR_CMD_ERR_MASK) {	/* Command error */
+			/* Indicate that transfer is complete, but set the number of
+			 * bytes transferred as zero. SPI subsystem will identify the
+			 * error as the remaining bytes to be transferred is non-zero.
+			 */
+			xspi->cmd_err = 1;
+			complete(&xspi->done);
+		}
+
 		if (ipif_isr & XSPI_INTR_TX_EMPTY) {	/* Transmission completed */
-			u16 cr;
-			u8 sr;
 
 			/* A transmit has just completed. Process received data and
 			 * check for more data to transmit. Always inhibit the
 			 * transmitter while the Isr refills the transmit register/FIFO,
 			 * or make sure it is stopped if we're done.
 			 */
-			cr = xspi->read_fn(xspi->regs + XSPI_CR_OFFSET);
 			xspi->write_fn(cr | XSPI_CR_TRANS_INHIBIT,
 				xspi->regs + XSPI_CR_OFFSET);
 
@@ -487,6 +530,7 @@ static irqreturn_t xilinx_spi_irq(int irq, void *dev_id)
 				complete(&xspi->done);
 			}
 		}
+
 	} else { /* We're a SPI slave */
 
 		if (ipif_isr & XSPI_INTR_SLAVE_SEL_ASSERT) {
@@ -494,18 +538,9 @@ static irqreturn_t xilinx_spi_irq(int irq, void *dev_id)
 		}
 		if (ipif_isr & XSPI_INTR_RX_NOT_EMPTY) {	/* Byte received */
 			/* Read out all the data from the Rx FIFO */
-			sr = xspi->read_fn(xspi->regs + XSPI_SR_OFFSET);
+			sr = xspi->read_fn(xspi + XSPI_SR_OFFSET);
 			while ((sr & XSPI_SR_RX_EMPTY_MASK) == 0) {
-				u32 data;
-
-				data = xspi->read_fn(xspi->regs + XSPI_RXD_OFFSET);
-				#ifdef XSPI_DEBUG_FIFOIO
-				printk("{%02x}", data & 0xff);
-				#endif
-				if (xspi->rx_ptr - xspi->slave_rx_buf < sizeof(xspi->slave_rx_buf)) {
-					*xspi->rx_ptr++ = (u8)(data & 0xFF);
-				}
-				/* Check if the transfer is completed. */
+				xspi->rx_fn(xspi);
 				sr = xspi->read_fn(xspi->regs + XSPI_SR_OFFSET);
 			}
 			if (xspi->remaining_bytes > 0) {
