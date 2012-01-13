@@ -99,6 +99,13 @@ typedef enum {
 #define PTP_DEFAULT_UNLOCK_TIME     ( 100)
 #define PTP_DEFAULT_UNLOCK_THRESH   (8000)
 
+/* E2E versions are larger to account for the packet jitter. Lock detection
+ * uses the instantanious offset, not an average or filtered one. */
+#define PTP_DEFAULT_LOCK_RANGE_E2E      (5000)
+#define PTP_DEFAULT_LOCK_TIME_E2E       (2000)
+#define PTP_DEFAULT_UNLOCK_TIME_E2E     ( 100)
+#define PTP_DEFAULT_UNLOCK_THRESH_E2E  (20000)
+
 typedef uint8_t PtpClockIdentity[PTP_CLOCK_IDENTITY_BYTES];
 
 typedef struct {
@@ -203,10 +210,10 @@ typedef struct {
 /* Default coefficient sets for the two distinct delay mechanisms */
 #define DEFAULT_P2P_COEFF_P  (0xFFF00000)
 #define DEFAULT_P2P_COEFF_I  (0x80000000)
-#define DEFAULT_P2P_COEFF_D  (0x80000000)
+#define DEFAULT_P2P_COEFF_D  (0x00000000)
 
-#define DEFAULT_E2E_COEFF_P  (0xF8000000)
-#define DEFAULT_E2E_COEFF_I  (0xFC000000)
+#define DEFAULT_E2E_COEFF_P  (0xFFF00000)
+#define DEFAULT_E2E_COEFF_I  (0xFFF00000)
 #define DEFAULT_E2E_COEFF_D  (0x00000000)
 
 /*
@@ -271,6 +278,9 @@ typedef struct {
 
 /* I/O control operation to acknowledge Grandmaster changes */
 #define IOC_PTP_ACK_GM_CHANGE _IO('p', 0x1c)
+
+/* I/O control to get the current lock state */
+#define IOC_PTP_GET_RTC_LOCKED _IOR('p', 0x1d, uint32_t)
 
 /* PTP events Generic Netlink family name, version, and multicast groups */
 #define PTP_EVENTS_FAMILY_NAME     "PTP_EVENTS"

@@ -463,7 +463,9 @@ struct phy_fixup {
  */
 static inline int phy_read(struct phy_device *phydev, u32 regnum)
 {
-	return mdiobus_read(phydev->bus, phydev->addr, regnum);
+
+  return mdiobus_read(phydev->bus, phydev->addr, regnum);
+	
 }
 
 /**

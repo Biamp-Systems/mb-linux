@@ -24,10 +24,12 @@
  */
 
 #include "labx_audio_depacketizer.h"
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/kthread.h>
 #include <xio.h>
 
 #ifdef CONFIG_OF
@@ -36,10 +38,10 @@
 #endif // CONFIG_OF
 
 
-/* Driver name and the revision of hardware expected (1.1 - 1.2) */
+/* Driver name and the revision of hardware expected (1.1 - 1.7) */
 #define DRIVER_NAME "labx_audio_depacketizer"
 #define DRIVER_VERSION_MIN  0x11
-#define DRIVER_VERSION_MAX  0x16
+#define DRIVER_VERSION_MAX  0x17
 
 /* "Breakpoint" revision numbers for certain features */
 #define UNIFIED_MATCH_VERSION_MIN  0x12
@@ -70,6 +72,17 @@ static uint32_t instanceCount;
 #define DBG(f, x...) printk(DRIVER_NAME " [%s()]: " f, __func__,## x)
 #else
 #define DBG(f, x...)
+#endif
+
+/* Number of milliseconds to wait before permitting consecutive events from
+ * being propagated up to userspace
+ */
+#define EVENT_THROTTLE_MSECS (250)
+
+#ifndef DMA_CALLBACKS
+#define DMA_CALLBACKS NULL
+#else
+DMA_CALLBACKS_EXTERN
 #endif
 
 /* Disables the passed instance */
@@ -603,23 +616,14 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_SYT_INTERVAL_REG),
             clockDomainSettings->sytInterval);
 
-  /* Set an initial half-period for depacketizer >= 1.6 */
-  if ((depacketizer->capabilities.versionMajor > 1) ||
-      (depacketizer->capabilities.versionMinor >= 6)) {
-
-    XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_HALF_PERIOD_REG),
-              clockDomainSettings->halfPeriod);
-    XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_REMAINDER_REG),
-              clockDomainSettings->remainder);
-    controlValue |= MC_CONTROL_LOAD_HALF_PERIOD;
-  }
-
   /* Configure the generated clock edge for the clock domain that corresponds to a
    * sample. This should match the gateware that is providing the "current" time
    * reference to the depacketizer.
    */
   controlValue |= (clockDomainSettings->sampleEdge == DOMAIN_SAMPLE_EDGE_RISING) ?
                    MC_CONTROL_SAMPLE_EDGE_RISING : MC_CONTROL_SAMPLE_EDGE_FALLING;
+  controlValue |= (clockDomainSettings->enabled == DOMAIN_SYNC) ?
+                   MC_CONTROL_SYNC_EXTERNAL : MC_CONTROL_SYNC_INTERNAL;
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_CONTROL_REG),
             controlValue);
 
@@ -630,10 +634,24 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
    */
   recoveryIndex = (clockRecoverySettings->matchUnit & STREAM_INDEX_MASK(depacketizer));
   if(clockDomainSettings->enabled == DOMAIN_ENABLED) {
+    /* Enable both the recovery as well as the phase "nudge" logic */
     recoveryIndex |= RECOVERY_ENABLED(depacketizer);
+    recoveryIndex |= PHASE_NUDGE_ENABLED(depacketizer);
   }
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, RECOVERY_INDEX_REG),
             recoveryIndex);
+
+  /* Set an initial half-period for depacketizer >= 1.6 */
+  if ((depacketizer->capabilities.versionMajor > 1) ||
+      (depacketizer->capabilities.versionMinor >= 6)) {
+
+    XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_RTC_INCREMENT_REG),
+              0x40000000); /* TODO - Where should we get the nominal increment from? */
+    XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_REMAINDER_REG),
+              clockDomainSettings->remainder);
+    XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_HALF_PERIOD_REG),
+              clockDomainSettings->halfPeriod);
+  }
 
   /* Finally, configure the VCO control logic for the domain.  If the domain is enabled,
    * it is configured as a proportional controller to servo an external VCO via a DAC
@@ -650,9 +668,11 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, DAC_OFFSET_REG),
             DAC_OFFSET_ZERO);
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, DAC_P_COEFF_REG),
-            ((clockDomainSettings->enabled == DOMAIN_ENABLED) ? DAC_COEFF_MAX : DAC_COEFF_ZERO));
+            (((clockDomainSettings->enabled == DOMAIN_ENABLED) ||
+	      (clockDomainSettings->enabled == DOMAIN_SYNC)) 
+	     ? DAC_COEFF_MAX : DAC_COEFF_ZERO));
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, LOCK_COUNT_REG),
-            ((512 << VCO_LOCK_COUNT_SHIFT) | 0));
+            ((512 << VCO_LOCK_COUNT_SHIFT) | (8 << VCO_UNLOCK_COUNT_SHIFT)));
 
   /* TODO: Need to introduce some locked status and interrupt mask / flag bits in the hardware!
    *       Once they exist, a lock detection kernel event mechanism can be added to the driver
@@ -682,19 +702,88 @@ static void reset_depacketizer(struct audio_depacketizer *depacketizer) {
 static irqreturn_t labx_audio_depacketizer_interrupt(int irq, void *dev_id) {
   struct audio_depacketizer *depacketizer = (struct audio_depacketizer*) dev_id;
   uint32_t maskedFlags;
+  uint32_t irqMask;
+  irqreturn_t returnValue = IRQ_NONE;
 
   /* Read the interrupt flags and immediately clear them */
   maskedFlags = XIo_In32(REGISTER_ADDRESS(depacketizer, IRQ_FLAGS_REG));
-  maskedFlags &= XIo_In32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG));
+  irqMask = XIo_In32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG));
+  maskedFlags &= irqMask;
   XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_FLAGS_REG), maskedFlags);
 
   /* Detect the timer IRQ */
   if((maskedFlags & SYNC_IRQ) != 0) {
     /* Wake up all threads waiting for a synchronization event */
     wake_up_interruptible(&(depacketizer->syncedWriteQueue));
+    returnValue = IRQ_HANDLED;
   }
   
-  return(IRQ_HANDLED);
+  /* Detect the stream change and stream reset IRQs; either one should
+   * simply trigger the netlink thread.
+   */
+  if((maskedFlags & (STREAM_IRQ | SEQ_ERROR_IRQ)) != 0) {
+    /* Increment the status count */
+    depacketizer->streamStatusGeneration++;
+
+    /* If this was a sequence error IRQ, leave a flag in place */
+    if((maskedFlags & SEQ_ERROR_IRQ) != 0) depacketizer->streamSeqError = 1;
+
+    /* Disarm both event interrupts while the status thread handles the present
+     * event(s).  This permits the status thread to limit the rate at which events
+     * are accepted and propagated up to userspace.
+     */
+    irqMask &= ~(STREAM_IRQ | SEQ_ERROR_IRQ);
+    XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), irqMask);
+
+    /* Wake up all threads waiting for a stream status event */
+    wake_up_interruptible(&(depacketizer->streamStatusQueue));
+    returnValue = IRQ_HANDLED;
+  }
+
+  /* Return whether this was an IRQ we handled or not */
+  return(returnValue);
+}
+
+static int netlink_thread(void *data)
+{
+  struct audio_depacketizer *depacketizer = (struct audio_depacketizer*)data;
+  uint32_t streamStatusGeneration = depacketizer->streamStatusGeneration;
+  uint32_t irqMask;
+
+  __set_current_state(TASK_RUNNING);
+
+  do {
+    set_current_state(TASK_INTERRUPTIBLE);
+      
+    wait_event_interruptible(depacketizer->streamStatusQueue,
+                             ((depacketizer->streamStatusGeneration != streamStatusGeneration) || (kthread_should_stop())));
+
+    if (kthread_should_stop()) break;
+
+    __set_current_state(TASK_RUNNING);
+
+    streamStatusGeneration = depacketizer->streamStatusGeneration;
+
+    audio_depacketizer_stream_event(depacketizer);
+
+    /* Before returning to waiting, optionally sleep a little bit and then
+     * re-enable the IRQs which trigger us.  There should be no need to disable
+     * interrupts to prevent a race condition since the only part of the ISR
+     * which modifies the IRQ mask is the servicing of the IRQs which are at
+     * present disabled.
+     *
+     * Inserting a delay here, in conjunction with the disabling of the event
+     * IRQ flags by the ISR, effectively limits the rate at which events can
+     * be generated and sent up to user space.  Using an ISR / waitqueue is,
+     * however, more responsive to occasional events than straight-up polling.
+     */
+    msleep(EVENT_THROTTLE_MSECS);
+    irqMask = XIo_In32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG));
+    irqMask |= (STREAM_IRQ | SEQ_ERROR_IRQ);
+    XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), irqMask);
+  } while (!kthread_should_stop());
+
+  return 0;
 }
 
 /*
@@ -720,6 +809,14 @@ static int audio_depacketizer_open(struct inode *inode, struct file *filp)
   }
   spin_unlock_irqrestore(&depacketizer->mutex, flags);
   preempt_enable();
+
+  /* Ensure the packet engine is reset */
+  reset_depacketizer(depacketizer);
+
+  /* Open the DMA, if we have one */
+  if(depacketizer->hasDma == INSTANCE_HAS_DMA) {
+    labx_dma_open(&depacketizer->dma);
+  }
   
   return(returnValue);
 }
@@ -729,15 +826,25 @@ static int audio_depacketizer_release(struct inode *inode, struct file *filp)
   struct audio_depacketizer *depacketizer = (struct audio_depacketizer*)filp->private_data;
   unsigned long flags;
 
+  /* Release the DMA, if we have one */
+  if(depacketizer->hasDma == INSTANCE_HAS_DMA) {
+    labx_dma_release(&depacketizer->dma);
+  }
+
+  /* Ensure the packet engine is reset */
+  reset_depacketizer(depacketizer);
+
   preempt_disable();
   spin_lock_irqsave(&depacketizer->mutex, flags);
   depacketizer->opened = false;
   spin_unlock_irqrestore(&depacketizer->mutex, flags);
   preempt_enable();
+
   return(0);
 }
 
 /* Buffer for storing configuration words */
+#define MAX_CONFIG_WORDS 1024
 static uint32_t configWords[MAX_CONFIG_WORDS];
 
 /* I/O control operations for the driver */
@@ -759,17 +866,37 @@ static long audio_depacketizer_ioctl(struct file *filp,
 
   case IOC_LOAD_DESCRIPTOR:
     {
-      ConfigWords descriptor;
+      ConfigWords userDescriptor;
+      ConfigWords localDescriptor;
 
-      if(copy_from_user(&descriptor, (void __user*)arg, sizeof(descriptor)) != 0) {
+      if(copy_from_user(&userDescriptor, (void __user*)arg, sizeof(userDescriptor)) != 0) {
         return(-EFAULT);
       }
-      if(copy_from_user(configWords, (void __user*)descriptor.configWords, 
-                        (descriptor.numWords * sizeof(uint32_t))) != 0) {
-        return(-EFAULT);
+
+      /* Sanity-check the number of words against our maximum */
+      if((userDescriptor.offset + userDescriptor.numWords) > 
+         depacketizer->capabilities.maxInstructions) {
+        return(-ERANGE);
       }
-      descriptor.configWords = configWords;
-      returnValue = load_descriptor(depacketizer, &descriptor);
+
+      localDescriptor.offset          = userDescriptor.offset;
+      localDescriptor.interlockedLoad = userDescriptor.interlockedLoad;
+      localDescriptor.loadFlags       = userDescriptor.loadFlags;
+      localDescriptor.configWords     = configWords;
+      while(userDescriptor.numWords > 0) {
+        /* Load in chunks, never exceeding our local buffer size */
+        localDescriptor.numWords = ((userDescriptor.numWords > MAX_CONFIG_WORDS) ?
+                                    MAX_CONFIG_WORDS : userDescriptor.numWords);
+        if(copy_from_user(configWords, (void __user*)userDescriptor.configWords, 
+                          (localDescriptor.numWords * sizeof(uint32_t))) != 0) {
+          return(-EFAULT);
+        }
+        returnValue                 = load_descriptor(depacketizer, &localDescriptor);
+        userDescriptor.configWords += localDescriptor.numWords;
+        localDescriptor.offset     += localDescriptor.numWords;
+        userDescriptor.numWords    -= localDescriptor.numWords;
+        if(returnValue < 0) break;
+      }
     }
     break;
 
@@ -782,13 +909,27 @@ static long audio_depacketizer_ioctl(struct file *filp,
       if(copy_from_user(&userDescriptor, (void __user*)arg, sizeof(userDescriptor)) != 0) {
         return(-EFAULT);
       }
-      localDescriptor.offset = userDescriptor.offset;
-      localDescriptor.numWords = userDescriptor.numWords;
+
+      /* Sanity-check the number of words against our maximum */
+      if((userDescriptor.offset + userDescriptor.numWords) > 
+         depacketizer->capabilities.maxInstructions) {
+        return(-ERANGE);
+      }
+
+      localDescriptor.offset      = userDescriptor.offset;
       localDescriptor.configWords = configWords;
-      copy_descriptor(depacketizer, &localDescriptor);
-      if(copy_to_user((void __user*)userDescriptor.configWords, configWords, 
-                      (userDescriptor.numWords * sizeof(uint32_t))) != 0) {
-        return(-EFAULT);
+      while(userDescriptor.numWords > 0) {
+        /* Transfer in chunks, never exceeding our local buffer size */
+        localDescriptor.numWords = ((userDescriptor.numWords > MAX_CONFIG_WORDS) ? 
+                                    MAX_CONFIG_WORDS : userDescriptor.numWords);
+        copy_descriptor(depacketizer, &localDescriptor);
+        if(copy_to_user((void __user*)userDescriptor.configWords, configWords, 
+                        (localDescriptor.numWords * sizeof(uint32_t))) != 0) {
+          return(-EFAULT);
+        }
+        userDescriptor.configWords += localDescriptor.numWords;
+        localDescriptor.offset     += localDescriptor.numWords;
+        userDescriptor.numWords    -= localDescriptor.numWords;
       }
     }
     break;
@@ -891,7 +1032,7 @@ static int audio_depacketizer_probe(const char *name,
                                     struct platform_device *pdev,
                                     struct resource *addressRange,
                                     struct resource *irq,
-				    const char *interfaceType) {
+                                    const char *interfaceType) {
   struct audio_depacketizer *depacketizer;
   uint32_t capsWord;
   uint32_t versionWord;
@@ -899,6 +1040,7 @@ static int audio_depacketizer_probe(const char *name,
   uint32_t versionMinor;
   uint32_t versionCompare;
   uint32_t maxStreamShifter;
+  int32_t dmaIrqParam;
   int returnValue;
   
   /* Create and populate a device structure */
@@ -929,9 +1071,13 @@ static int audio_depacketizer_probe(const char *name,
 
   /* Retain the IRQ and register our handler, if an IRQ resource was supplied. */
   if(irq != NULL) {
+    /* Request the IRQ as a shared line, since we may share it with a DMA */
     depacketizer->irq = irq->start;
-    returnValue = request_irq(depacketizer->irq, &labx_audio_depacketizer_interrupt, 
-                              IRQF_DISABLED, depacketizer->name, depacketizer);
+    returnValue = request_irq(depacketizer->irq, 
+                              &labx_audio_depacketizer_interrupt, 
+                              IRQF_SHARED, 
+                              depacketizer->name, 
+                              depacketizer);
     if (returnValue) {
       printk(KERN_ERR "%s : Could not allocate Lab X Audio Depacketizer interrupt (%d).\n",
              depacketizer->name, depacketizer->irq);
@@ -1022,6 +1168,9 @@ static int audio_depacketizer_probe(const char *name,
   spin_lock_init(&depacketizer->mutex);
   depacketizer->opened = false;
 
+  /* Assign an instance number to the depacketizer for use as a minor number */
+  depacketizer->instanceNumber = instanceCount++;
+
   /* Test to see whether the depacketizer instance has a Dma_Coprocessor
    * module contained within for handling the back-end of the audio data
    */
@@ -1033,7 +1182,22 @@ static int audio_depacketizer_probe(const char *name,
      */
     depacketizer->hasDma = INSTANCE_HAS_DMA;
     depacketizer->dma.virtualAddress = depacketizer->virtualAddress + (depacketizer->capabilities.maxInstructions*4*4);
-    labx_dma_probe(&depacketizer->dma); 
+
+    /* Provide the encapsulated DMA with the shared interrupt line */
+    if(depacketizer->irq == NO_IRQ_SUPPLIED) {
+      dmaIrqParam = DMA_NO_IRQ_SUPPLIED;
+    } else {
+      dmaIrqParam = depacketizer->irq;
+    }
+
+    /* Allow the underlying DMA driver to infer its microcode size */
+    labx_dma_probe(&depacketizer->dma, 
+                   DRIVER_MAJOR,
+                   depacketizer->instanceNumber,
+                   depacketizer->name, 
+                   DMA_UCODE_SIZE_UNKNOWN, 
+                   dmaIrqParam,
+                   DMA_CALLBACKS); 
 #else
     /* The interface type specified by the platform involves a DMA instance,
      * but the driver for the Dma_Coprocessor hasn't been enabled in the
@@ -1054,7 +1218,6 @@ static int audio_depacketizer_probe(const char *name,
   /* Add as a character device to make the instance available for use */
   cdev_init(&depacketizer->cdev, &audio_depacketizer_fops);
   depacketizer->cdev.owner = THIS_MODULE;
-  depacketizer->instanceNumber = instanceCount++;
   kobject_set_name(&depacketizer->cdev.kobj, "%s.%d", depacketizer->name, depacketizer->instanceNumber);
   returnValue = cdev_add(&depacketizer->cdev, MKDEV(DRIVER_MAJOR, depacketizer->instanceNumber), 1);
   if (returnValue < 0)
@@ -1066,14 +1229,32 @@ static int audio_depacketizer_probe(const char *name,
   /* Initialize the waitqueue used for synchronized writes */
   init_waitqueue_head(&(depacketizer->syncedWriteQueue));
 
-  /* Now that the device is configured, enable interrupts if they are to be used */
+  /* Initialize the waitqueue used for stream status events */
+  init_waitqueue_head(&(depacketizer->streamStatusQueue));
+
+  /* Initialize the netlink state and start the thread */
+  depacketizer->netlinkSequence = 0;
+  depacketizer->netlinkTask = kthread_run(netlink_thread, (void*)depacketizer, "%s:netlink", depacketizer->name);
+  if (IS_ERR(depacketizer->netlinkTask)) {
+    printk(KERN_ERR "Depacketizer netlink task creation failed.\n");
+    returnValue = -EIO;
+    goto kthread_fail;
+  }
+
+  /* Now that the device is configured, enable interrupts if they are to be used,
+   * clearing IRQ state first
+   */
+  depacketizer->streamStatusGeneration = 0;
+  depacketizer->streamSeqError         = 0;
   if(depacketizer->irq != NO_IRQ_SUPPLIED) {
-    XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), SYNC_IRQ);
+    XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), (SYNC_IRQ | STREAM_IRQ | SEQ_ERROR_IRQ));
   }
 
   /* Return success */
   return(0);
 
+ kthread_fail:
+  cdev_del(&depacketizer->cdev);
  unmap:
   iounmap(depacketizer->virtualAddress);
  release:
@@ -1130,6 +1311,10 @@ static int __devexit audio_depacketizer_of_remove(struct platform_device *dev)
 static struct of_device_id audio_depacketizer_of_match[] = {
 	{ .compatible = "xlnx,labx-audio-depacketizer-1.00.a", },
 	{ .compatible = "xlnx,labx-audio-depacketizer-1.01.a", },
+	{ .compatible = "xlnx,labx-audio-depacketizer-1.02.a", },
+	{ .compatible = "xlnx,labx-audio-depacketizer-1.03.a", },
+	{ .compatible = "xlnx,labx-audio-depacketizer-1.04.a", },
+	{ .compatible = "xlnx,labx-audio-depacketizer-1.05.a", },
 	{ /* end of list */ },
 };
 
@@ -1190,6 +1375,16 @@ static int audio_depacketizer_platform_remove(struct platform_device *pdev)
   depacketizer = platform_get_drvdata(pdev);
   if(!depacketizer) return(-1);
 
+  if (depacketizer->hasDma == INSTANCE_HAS_DMA) {
+    labx_dma_remove(&depacketizer->dma);
+  }
+
+  /* Release the IRQ */
+  if (depacketizer->irq != NO_IRQ_SUPPLIED) {
+    free_irq(depacketizer->irq, depacketizer);
+  }
+
+  kthread_stop(depacketizer->netlinkTask);
   cdev_del(&depacketizer->cdev);
   reset_depacketizer(depacketizer);
   iounmap(depacketizer->virtualAddress);
@@ -1211,8 +1406,8 @@ static struct platform_driver audio_depacketizer_driver = {
 static int __init audio_depacketizer_driver_init(void)
 {
   int returnValue;
-  printk(KERN_INFO DRIVER_NAME ": AVB Audio Depacketizer driver\n");
-  printk(KERN_INFO DRIVER_NAME ": Copyright(c) Lab X Technologies, LLC\n");
+  printk(KERN_INFO DRIVER_NAME ": AVB Audio Depacketizer Driver\n");
+  printk(KERN_INFO DRIVER_NAME ": Copyright (c) Lab X Technologies, LLC\n");
 
 #ifdef CONFIG_OF
   returnValue = of_register_platform_driver(&of_audio_depacketizer_driver);
@@ -1227,9 +1422,13 @@ static int __init audio_depacketizer_driver_init(void)
   /* Allocate a range of major / minor device numbers for use */
   instanceCount = 0;
   if((returnValue = register_chrdev_region(MKDEV(DRIVER_MAJOR, 0),MAX_INSTANCES, DRIVER_NAME)) < 0) { 
-    printk(KERN_INFO DRIVER_NAME "Failed to allocate character device range\n");
+    printk(KERN_INFO DRIVER_NAME ": Failed to allocate character device range\n");
     goto device_unregister;
   }
+
+  /* Initialize the Netlink layer for the driver */
+  register_audio_depacketizer_netlink();
+
   return(0);
 
 device_unregister:
@@ -1241,6 +1440,9 @@ error:
 static void __exit audio_depacketizer_driver_exit(void)
 {
   unregister_chrdev_region(MKDEV(DRIVER_MAJOR, 0),MAX_INSTANCES);
+
+  /* Unregister Generic Netlink family */
+  unregister_audio_depacketizer_netlink();
 
   /* Unregister as a platform device driver */
   platform_driver_unregister(&audio_depacketizer_driver);

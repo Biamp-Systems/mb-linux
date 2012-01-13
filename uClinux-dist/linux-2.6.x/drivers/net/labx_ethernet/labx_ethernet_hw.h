@@ -65,23 +65,6 @@ extern "C" {
  * 32 bit.
  */
 
-/** @name Direct registers
- *  @{
- */
-#define XTE_RAF_OFFSET  XXXXXXXXXX /*0x00000000*/  /**< Reset and address filter */
-#define XTE_TPF_OFFSET  XXXXXXXXXX /*0x00000004*/  /**< Transmit pause frame */
-#define XTE_IFGP_OFFSET XXXXXXXXXX /*0x00000008*/  /**< Transmit inter-frame gap adjustment */
-#define XTE_IS_OFFSET   XXXXXXXXXX /*0x0000000C*/  /**< Interrupt status */
-#define XTE_IP_OFFSET   XXXXXXXXXX /*0x00000010*/  /**< Interrupt pending */
-#define XTE_IE_OFFSET   XXXXXXXXXX /*0x00000014*/  /**< Interrupt enable */
-
-#define XTE_MSW_OFFSET  XXXXXXXXXX /*0x00000020*/  /**< Most significant word data */
-#define XTE_LSW_OFFSET  XXXXXXXXXX /*0x00000024*/  /**< Least significant word data */
-#define XTE_CTL_OFFSET  XXXXXXXXXX /*0x00000028*/  /**< Control */
-#define XTE_RDY_OFFSET  XXXXXXXXXX /*0x0000002C*/  /**< Ready status */
-/*@}*/
-
-
 /* 
  * Lab X Tri-mode MAC register definitions 
  * The first quarter of the address space maps to registers used for
@@ -94,6 +77,11 @@ extern "C" {
 #  define PHY_ADDR_SHIFT      (5)
 #  define PHY_MDIO_READ       (0x0400)
 #  define PHY_MDIO_WRITE      (0x0000)
+#  define PHY_10G_MDIO_WRITE  (0x0400)
+#  define PHY_10G_MDIO_READ   (0x0C00)
+#  define PHY_10G_MDIO_ADDR   (0x0000)
+#  define PHY_10G_MDIO_RINC   (0x0800)
+#define PHY_10G_DEVTYPE_MASK  (0x01F)
 #define MDIO_DATA_REG         (0x00000004)
 #  define PHY_DATA_MASK       (0x0000FFFF)
 #define INT_MASK_REG          (0x00000008)
@@ -103,6 +91,20 @@ extern "C" {
 #  define NO_IRQS             (0x00000000)
 #  define MDIO_IRQ_MASK       (0x00000001)
 #  define PHY_IRQ_MASK        (0x00000002)
+#define VLAN_MASK_REG         (0x00000010)
+#define MAC_SELECT_REG        (0x00000014)
+#define MAC_CONTROL_REG       (0x00000018)
+#define   MAC_ADDRESS_LOAD_ACTIVE 0x00000100
+#define   MAC_ADDRESS_LOAD_LAST   0x00000200
+#define MAC_LOAD_REG          (0x0000001C)
+#define BAD_PACKET_REG        (0x00000020)
+#define REVISION_REG          (0x0000003C)
+#  define REVISION_MINOR_MASK  0x0000000F
+#  define REVISION_MINOR_SHIFT 0
+#  define REVISION_MAJOR_MASK  0x000000F0
+#  define REVISION_MAJOR_SHIFT 4
+#  define REVISION_MATCH_MASK  0x0000FF00
+#  define REVISION_MATCH_SHIFT 8
 
 /* The MAC registers are located in the second quarter of the address space */
 #define LABX_MAC_REGS_BASE    (0x00001000)

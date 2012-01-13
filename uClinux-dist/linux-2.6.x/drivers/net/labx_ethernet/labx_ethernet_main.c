@@ -42,6 +42,11 @@
 #include <linux/vmalloc.h>
 #include <linux/kthread.h>
 
+#ifdef CONFIG_MTD_CFI_OTP_USER
+//for boards with OTP reg
+#include <linux/mtd/cfi_otp.h>
+#endif
+
 #ifdef CONFIG_OF
 // For open firmware.
 #include <linux/of_platform.h>
@@ -54,6 +59,11 @@
 #include "net/labx_ethernet/labx_ethernet_defs.h"
 
 #define LOCAL_FEATURE_RX_CSUM   0x01
+
+/* Revision break points at which different features exist */
+
+/* CRC error statistics counter, >= 1.2 */
+#define RX_CRC_ERRS_MIN_VERSION ((1 << REVISION_MAJOR_SHIFT) | 2)
 
 /*
  * Default SEND and RECV buffer descriptors (BD) numbers.
@@ -394,19 +404,6 @@ inline void _labx_eth_PhyWrite(XLlTemac *InstancePtr, u32 PhyAddress,
   spin_unlock_irqrestore(&XTE_spinlock, flags);
 }
 
-
-static inline int _labx_eth_MulticastClear(XLlTemac *InstancePtr, int Entry)
-{
-  int status;
-  unsigned long flags;
-
-  spin_lock_irqsave(&XTE_spinlock, flags);
-  status = labx_eth_MulticastClear(InstancePtr, Entry);
-  spin_unlock_irqrestore(&XTE_spinlock, flags);
-
-  return status;
-}
-
 static inline int _labx_eth_SetMacPauseAddress(XLlTemac *InstancePtr, void *AddressPtr)
 {
   int status;
@@ -511,13 +508,13 @@ static void labx_ethernet_reset(struct net_device *dev, u32 line_num)
       lp->phy_dev->advertising &= ~SUPPORTED_1000baseT_Half;
       lp->phy_dev->drv->config_aneg(lp->phy_dev);
 
-      printk("%s: About to call phy_start_aneg()\n",__func__);
+      /*printk("%s: About to call phy_start_aneg()\n",__func__);*/
       ret = phy_start_aneg(lp->phy_dev);
       if (0 != ret) {
 	printk("%s: phy_start_aneg() Failed with code %d\n",__func__,ret);
-      } else {
+      } /* else {
 	printk("%s: phy_start_aneg() Passed\n",__func__);
-      }
+      } */
     }
 
   /*
@@ -529,10 +526,10 @@ static void labx_ethernet_reset(struct net_device *dev, u32 line_num)
   (int) _labx_eth_SetOptions(&lp->Emac, Options);
   (int) _labx_eth_ClearOptions(&lp->Emac, ~Options);
   Options = labx_eth_GetOptions(&lp->Emac);
-  printk(KERN_INFO "%s: labx_ethernet: Options: 0x%x\n", dev->name, Options);
+  /* printk(KERN_INFO "%s: labx_ethernet: Options: 0x%x\n", dev->name, Options); */
 
   fifo_int_enable(lp, (FIFO_INT_TC_MASK | FIFO_INT_RC_MASK | 
-		       FIFO_INT_RXERROR_MASK | FIFO_INT_TXERROR_MASK));
+                       FIFO_INT_RXERROR_MASK | FIFO_INT_TXERROR_MASK));
 
   if (lp->deferred_skb) {
     dev_kfree_skb_any(lp->deferred_skb);
@@ -581,14 +578,17 @@ static irqreturn_t xenet_fifo_interrupt(int irq, void *dev_id)
       struct list_head *cur_lp;
       spin_lock_irqsave(&receivedQueueSpin, flags);
       list_for_each(cur_lp, &receivedQueue) {
-	if (cur_lp == &(lp->rcv)) {
-	  break;
-	}
+        if (cur_lp == &(lp->rcv)) {
+          break;
+        }
       }
       if (cur_lp != &(lp->rcv)) {
-	list_add_tail(&lp->rcv, &receivedQueue);
-	fifo_int_disable(lp, FIFO_INT_ALL_MASK);
-	tasklet_schedule(&FifoRecvBH);
+        /* Add the device to the queue to be serviced and disable Rx interrupts
+         * in the meantime; the tasklet will re-enable them after servicing us.
+         */
+        list_add_tail(&lp->rcv, &receivedQueue);
+        fifo_int_disable(lp, (FIFO_INT_RC_MASK | FIFO_INT_RXERROR_MASK));
+        tasklet_schedule(&FifoRecvBH);
       }
       spin_unlock_irqrestore(&receivedQueueSpin, flags);
       irq_status &= ~FIFO_INT_RC_MASK;
@@ -747,7 +747,7 @@ static int xenet_open(struct net_device *dev)
 	printk("%s: phy_start_aneg() Passed\n",__func__);
       }
     } else {
-      printk("Not able to find Phy");
+      printk("Not able to find Phy\n");
       lp->phy_dev = NULL;
     }
   }
@@ -758,7 +758,7 @@ static int xenet_open(struct net_device *dev)
 
   /* Enable FIFO interrupts  - no polled mode */
   fifo_int_enable(lp, (FIFO_INT_TC_MASK | FIFO_INT_RC_MASK | 
-		       FIFO_INT_RXERROR_MASK | FIFO_INT_TXERROR_MASK));
+                       FIFO_INT_RXERROR_MASK | FIFO_INT_TXERROR_MASK));
 
   /* Start TEMAC device */
   _labx_eth_Start(&lp->Emac);
@@ -774,6 +774,13 @@ static int xenet_close(struct net_device *dev)
   unsigned long flags;
 
   struct net_local *lp = netdev_priv(dev);
+
+  /* Stop the connected phy device if there is one */
+  if (lp->phy_dev) {
+    phy_stop(lp->phy_dev);
+    phy_disconnect(lp->phy_dev);
+    lp->phy_dev = NULL;
+  }
 
   /* Stop Send queue */
   netif_stop_queue(dev);
@@ -807,26 +814,36 @@ static void xenet_set_multicast_list(struct net_device *dev)
   struct net_local *lp = netdev_priv(dev);
 
   u32 Options = labx_eth_GetOptions(&lp->Emac);
+  u32 maxMulticast = lp->Emac.MacMatchUnits - 2;
 
-  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > 6)
-    {
-      dev->flags |= IFF_PROMISC;
-      Options |= XTE_PROMISC_OPTION;
+  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || netdev_mc_count(dev) > maxMulticast) {
+    if (netdev_mc_count(dev) > maxMulticast) {
+      printk("Switching to promisc mode (too many multicast addrs: %d > %d)\n", dev->mc_count, maxMulticast);
     }
-  else
-    {
-      Options &= ~XTE_PROMISC_OPTION;
-    }
+    dev->flags |= IFF_PROMISC;
+    Options |= XTE_PROMISC_OPTION;
+  } else {
+    Options &= ~XTE_PROMISC_OPTION;
+  }
+
+  if (dev->flags&IFF_MULTICAST) {
+    Options |= XTE_MULTICAST_OPTION;
+  } else {
+    Options &= ~XTE_MULTICAST_OPTION;
+  }
+
+  if (dev->flags&IFF_BROADCAST) {
+    Options |= XTE_BROADCAST_OPTION;
+  } else {
+    Options &= ~XTE_BROADCAST_OPTION;
+  }
 
   //printk("Options: %08X, dev->flags %08X\n", Options, dev->flags);
   _labx_eth_Stop(&lp->Emac);
   (int) _labx_eth_SetOptions(&lp->Emac, Options);
   (int) _labx_eth_ClearOptions(&lp->Emac, ~Options);
 
-  if (netdev_mc_count(dev) > 0 && netdev_mc_count(dev) <= 6)
-    {
-      // TODO: Program multicast filters
-    }
+  labx_eth_UpdateMacFilters(&lp->Emac);
 
   if (dev->flags & IFF_UP)
     {
@@ -843,6 +860,14 @@ static int xenet_set_mac_address(struct net_device *dev, void *p)
   if (!is_valid_ether_addr(addr->sa_data))
     return -EINVAL;
 
+  /*printk("dev->dev_addr MAC address is %02X:%02X:%02X:%02X:%02X:%02X\n",
+	 dev->dev_addr[0], dev->dev_addr[1],
+	 dev->dev_addr[2], dev->dev_addr[3],
+	 dev->dev_addr[4], dev->dev_addr[5]);
+  printk("addr->sa_data MAC address is %02X:%02X:%02X:%02X:%02X:%02X\n",
+	 addr->sa_data[0], addr->sa_data[1],
+	 addr->sa_data[2], addr->sa_data[3],
+	 addr->sa_data[4], addr->sa_data[5]);*/
   memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 
   _labx_eth_Stop(&lp->Emac);
@@ -908,7 +933,7 @@ static int xenet_FifoSend(struct sk_buff *skb, struct net_device *dev)
   if (fifo_free_bytes < total_len) {
     netif_stop_queue(dev);	/* stop send queue */
     lp->deferred_skb = skb;	/* buffer the sk_buffer and will send
-				   it in interrupt context */
+                               it in interrupt context */
     spin_unlock_irqrestore(&XTE_tx_spinlock, flags);
     return 0;
   }
@@ -916,7 +941,9 @@ static int xenet_FifoSend(struct sk_buff *skb, struct net_device *dev)
   /* Write frame data to FIFO, starting with the header and following
    * up with each of the fragments
    */
+
   word_len = ((skb_headlen(skb) + 3) >> 2);
+
   buf_ptr = (u32*) skb->data;
   for(word_index = 0; word_index < word_len; word_index++) {
     Write_Fifo32(lp->Emac, FIFO_TDFD_OFFSET, htonl(*buf_ptr++));
@@ -925,6 +952,7 @@ static int xenet_FifoSend(struct sk_buff *skb, struct net_device *dev)
   frag = &skb_shinfo(skb)->frags[0];
   for (i = 1; i < total_frags; i++, frag++) {
     word_len = ((frag->size + 3) >> 2);
+
     buf_ptr = (u32*) (page_address(frag->page) + frag->page_offset);
     for(word_index = 0; word_index < word_len; word_index++) {
       Write_Fifo32(lp->Emac, FIFO_TDFD_OFFSET, htonl(*buf_ptr++));
@@ -962,7 +990,7 @@ static void FifoSendHandler(struct net_device *dev)
     int word_index;
     u32 word_len;
     u32 *buf_ptr;
-
+    
     skb = lp->deferred_skb;
     total_frags = skb_shinfo(skb)->nr_frags + 1;
     total_len = skb_headlen(skb);
@@ -982,7 +1010,9 @@ static void FifoSendHandler(struct net_device *dev)
     /* Write frame data to FIFO, starting with the header and following
      * up with each of the fragments
      */
-    word_len = ((skb_headlen(skb) + 3) >> 2);
+
+    word_len = ((skb_headlen(skb) + 3) >> 2);    
+
     buf_ptr = (u32*) skb->data;
     for(word_index = 0; word_index < word_len; word_index++) {
       Write_Fifo32(lp->Emac, FIFO_TDFD_OFFSET, htonl(*buf_ptr++));
@@ -991,12 +1021,13 @@ static void FifoSendHandler(struct net_device *dev)
     frag = &skb_shinfo(skb)->frags[0];
     for (i = 1; i < total_frags; i++, frag++) {
       word_len = ((frag->size + 3) >> 2);
+
       buf_ptr = (u32*) (page_address(frag->page) + frag->page_offset);
       for(word_index = 0; word_index < word_len; word_index++) {
-	Write_Fifo32(lp->Emac, FIFO_TDFD_OFFSET, htonl(*buf_ptr++));
+        Write_Fifo32(lp->Emac, FIFO_TDFD_OFFSET, htonl(*buf_ptr++));
       }
     }
-
+    
     /* Initiate transmit */
     Write_Fifo32(lp->Emac, FIFO_TLF_OFFSET, total_len);
 
@@ -1064,63 +1095,79 @@ static void FifoRecvHandler(unsigned long p)
   u32 word_len;
   u32 word_index;
   u32 *buf_ptr;
-
   struct net_device *dev;
   unsigned long flags;
-  spin_lock_irqsave(&receivedQueueSpin, flags);
-  if (list_empty(&receivedQueue)) {
-    spin_unlock_irqrestore(&receivedQueueSpin, flags);
-    return;
-  }
-  lp = list_entry(receivedQueue.next, struct net_local, rcv);
 
-  list_del_init(&(lp->rcv));
-  spin_unlock_irqrestore(&receivedQueueSpin, flags);
-  dev = lp->ndev;
-
-  /* The Rx FIFO occupancy always reflects whether there is packet data to
-   * be consumed still
+  /* More than one port may queue up for Rx servicing while the tasklet runs,
+   * so loop until no more are ready
    */
-  while(Read_Fifo32(lp->Emac, FIFO_RDFO_OFFSET) != 0) {
-    /* Read the Rx length register to get the length and "lock in" the packet */
-    len = Read_Fifo32(lp->Emac, FIFO_RLF_OFFSET);
-    word_len = ((len + 3) >> 2);
-
-    if (!(skb = alloc_skb(len + ALIGNMENT_RECV, GFP_ATOMIC))) {
-      /* Couldn't get memory. */
-      lp->ndev->stats.rx_dropped++;
-      printk(KERN_ERR
-	     "%s: labx_ethernet: could not allocate receive buffer.\n",
-	     dev->name);
-	    
-      /* Consume the packet data anyways to keep the FIFO coherent */
-      for(word_index = 0; word_index < word_len; word_index++) {
-	Read_Fifo32(lp->Emac, FIFO_RDFD_OFFSET);
-      }
-      break;
+  while(1) {
+    /* Get a pointer to the next device requiring Rx servicing */
+    spin_lock_irqsave(&receivedQueueSpin, flags);
+    if (list_empty(&receivedQueue)) {
+      /* No more ports enqueued, if another one enqueues after the spinlock
+       * is released, it will re-schedule us anyways.
+       */
+      spin_unlock_irqrestore(&receivedQueueSpin, flags);
+      return;
     }
+    lp = list_entry(receivedQueue.next, struct net_local, rcv);
 
-    /* Read the packet data; the occupancy register has already been
-     * tested; now read the packet length and then the corresponding
-     * number of words.
+    list_del_init(&(lp->rcv));
+    spin_unlock_irqrestore(&receivedQueueSpin, flags);
+    dev = lp->ndev;
+
+    /* The Rx FIFO occupancy always reflects whether there is packet data to
+     * be consumed still
      */
-    buf_ptr = (u32*) skb->data;
-    for(word_index = 0; word_index < word_len; word_index++) {
-      *buf_ptr++ = ntohl(Read_Fifo32(lp->Emac, FIFO_RDFD_OFFSET));
+    while(Read_Fifo32(lp->Emac, FIFO_RDFO_OFFSET) != 0) {
+      /* There is another, new packet available; clear the Rx complete flag bit
+       * as we are guaranteed to return here to receive any additional packets.
+       * We can safely do this as long as we haven't completely drained the FIFO
+       * yet, and it will avoid spurious interrupts from firing when we re-enable
+       * the Rx complete interrupt.
+       */
+      Write_Fifo32(lp->Emac, FIFO_ISR_OFFSET, FIFO_INT_RC_MASK);
+
+      /* Read the Rx length register to get the length and "lock in" the packet */
+      len = Read_Fifo32(lp->Emac, FIFO_RLF_OFFSET);
+      word_len = ((len + 3) >> 2);
+
+      if (!(skb = alloc_skb(len + ALIGNMENT_RECV, GFP_ATOMIC))) {
+        /* Couldn't get memory. */
+        lp->ndev->stats.rx_dropped++;
+        printk(KERN_ERR
+               "%s: labx_ethernet: could not allocate receive buffer.\n",
+               dev->name);
+	    
+        /* Consume the packet data anyways to keep the FIFO coherent */
+        for(word_index = 0; word_index < word_len; word_index++) {
+          Read_Fifo32(lp->Emac, FIFO_RDFD_OFFSET);
+        }
+        break;
+      }
+
+      /* Read the packet data; the occupancy register has already been
+       * tested; now read the packet length and then the corresponding
+       * number of words.
+       */
+      buf_ptr = (u32*) skb->data;
+      for(word_index = 0; word_index < word_len; word_index++) {
+        *buf_ptr++ = ntohl(Read_Fifo32(lp->Emac, FIFO_RDFD_OFFSET));
+      }
+      lp->ndev->stats.rx_packets++;
+      lp->ndev->stats.rx_bytes += len;
+
+      skb_put(skb, len);	/* Tell the skb how much data we got. */
+      skb->dev = dev;		/* Fill out required meta-data. */
+      skb->protocol = eth_type_trans(skb, dev);
+      skb->ip_summed = CHECKSUM_UNNECESSARY;
+      netif_rx(skb);		/* Send the packet upstream. */
     }
-    lp->ndev->stats.rx_packets++;
-    lp->ndev->stats.rx_bytes += len;
 
-    skb_put(skb, len);	/* Tell the skb how much data we got. */
-    skb->dev = dev;		/* Fill out required meta-data. */
-    skb->protocol = eth_type_trans(skb, dev);
-    skb->ip_summed = CHECKSUM_UNNECESSARY;
-    netif_rx(skb);		/* Send the packet upstream. */
-  }
-  
-  fifo_int_enable(lp, (FIFO_INT_TC_MASK | FIFO_INT_RC_MASK |
-		       FIFO_INT_RXERROR_MASK | FIFO_INT_TXERROR_MASK));
-
+    /* Re-enable the Rx interrupts for the device */
+    fifo_int_enable(lp, (FIFO_INT_RC_MASK | FIFO_INT_RXERROR_MASK));
+  } /* while(1) */
 }
 
 static int
@@ -1241,13 +1288,12 @@ labx_ethtool_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *ed)
  * status information we'd like. This is the list of strings used for that
  * status reporting. ETH_GSTRING_LEN is defined in ethtool.h
  */
-static char labx_ethtool_gstrings_stats[][ETH_GSTRING_LEN] = {
-  "txpkts", "txdropped", "txerr", "txfifoerr",
-  "rxpkts", "rxdropped", "rxerr", "rxfifoerr",
-  "rxrejerr", "max_frags", "tx_hw_csums", "rx_hw_csums",
+#define RX_CRC_ERRS_INDEX  (0)
+static char labx_ethernet_gstrings_stats[][ETH_GSTRING_LEN] = {
+  "RxCrcErrors",
 };
 
-#define LABX_ETHERNET_STATS_LEN ARRAY_SIZE(labx_ethtool_gstrings_stats)
+#define LABX_ETHERNET_STATS_LEN ARRAY_SIZE(labx_ethernet_gstrings_stats)
 
 /* Array defining the test modes we support */
 static const char labx_ethernet_gstrings_test[][ETH_GSTRING_LEN] = {
@@ -1276,7 +1322,7 @@ labx_ethtool_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 	   (LABX_ETHERNET_TEST_LEN * ETH_GSTRING_LEN));
     break;
   case ETH_SS_STATS:
-    memcpy(data, *labx_ethernet_gstrings_test,
+    memcpy(data, *labx_ethernet_gstrings_stats,
 	   (LABX_ETHERNET_STATS_LEN * ETH_GSTRING_LEN));
     break;
   }
@@ -1286,6 +1332,7 @@ static void
 labx_ethtool_self_test(struct net_device *dev, struct ethtool_test *test_info, 
 		       u64 *test_results) {
   struct net_local *lp = netdev_priv(dev);
+  XLlTemac *InstancePtr = (XLlTemac *) &lp->Emac;
   u32 phy_test_mode;
 
   /* Clear the test results */
@@ -1293,9 +1340,9 @@ labx_ethtool_self_test(struct net_device *dev, struct ethtool_test *test_info,
 
   /* We have co-opted this self-test ioctl for use as a means to put the
    * PHY into local loopback mode, or into other PHY-supported test modes.
-   * TODO: Add other test modes...
    */
-  if(lp->phy_dev->drv->set_test_mode) {
+  if(lp && lp->phy_dev && lp->phy_dev->drv &&
+        lp->phy_dev->drv->set_test_mode) {
     if(test_info->flags & ETH_TEST_FL_INT_LOOP) {
       phy_test_mode = PHY_TEST_INT_LOOP;
     } else if(test_info->flags & ETH_TEST_FL_EXT_LOOP) {
@@ -1312,19 +1359,48 @@ labx_ethtool_self_test(struct net_device *dev, struct ethtool_test *test_info,
 
     /* Enter the selected test mode */
     lp->phy_dev->drv->set_test_mode(lp->phy_dev, phy_test_mode);
-  } else printk("%s PHY driver does not support test modes\n",
-                lp->phy_dev->drv->name);
+  } else if(test_info->flags != 0) {
+    /* Complain if any test mode is selected (not normal mode) */
+    printk("%s PHY driver does not support test modes\n",
+           (lp && lp->phy_dev && lp->phy_dev->drv && lp->phy_dev->drv->name) ?
+           lp->phy_dev->drv->name : "<Unknown>");
+  }
+
+  /* Having switched modes, clear the hardware statistics counters,
+   * if they exist
+   */
+  if((InstancePtr->versionReg & (REVISION_MINOR_MASK | REVISION_MAJOR_MASK)) >=
+      RX_CRC_ERRS_MIN_VERSION) {
+    labx_eth_WriteReg(InstancePtr->Config.BaseAddress, BAD_PACKET_REG, 0);
+  }
+}
+
+static void labx_ethtool_get_stats(struct net_device *dev, 
+                                   struct ethtool_stats *stats, 
+                                   u64 *data) {
+  struct net_local *lp = netdev_priv(dev);
+  XLlTemac *InstancePtr = (XLlTemac *) &lp->Emac;
+
+  /* Copy each statistic into the data location for it.  At the moment, the
+   * only statistic is hosted directly within a hardware register.
+   */
+
+  /* Fetch the CRC count from hardware, if supported */
+  if(InstancePtr->versionReg >= RX_CRC_ERRS_MIN_VERSION) {
+    data[RX_CRC_ERRS_INDEX] = labx_eth_ReadReg(InstancePtr->Config.BaseAddress, BAD_PACKET_REG);
+  } else data[RX_CRC_ERRS_INDEX] = 0ULL;
 }
 
 /* ethtool operations structure */
 static const struct ethtool_ops labx_ethtool_ops = {
-  .get_settings   = labx_ethtool_get_settings,
-  .set_settings   = labx_ethtool_set_settings,
-  .get_drvinfo    = labx_ethtool_get_drvinfo,
-  .get_regs       = labx_ethtool_get_regs,
-  .self_test      = labx_ethtool_self_test,
-  .get_sset_count = labx_ethtool_get_sset_count,
-  .get_strings    = labx_ethtool_get_strings,
+  .get_settings      = labx_ethtool_get_settings,
+  .set_settings      = labx_ethtool_set_settings,
+  .get_drvinfo       = labx_ethtool_get_drvinfo,
+  .get_regs          = labx_ethtool_get_regs,
+  .self_test         = labx_ethtool_self_test,
+  .get_sset_count    = labx_ethtool_get_sset_count,
+  .get_strings       = labx_ethtool_get_strings,
+  .get_ethtool_stats = labx_ethtool_get_stats,
 #if 0
   .get_link = ethtool_op_get_link,
   .nway_reset = labx_ethtool_nwayreset,
@@ -1337,255 +1413,6 @@ static const struct ethtool_ops labx_ethtool_ops = {
   .set_eeprom = labx_ethtool_set_eeprom,
 #endif
 };
-
-/* DEPRECATED ethtool ioctl() */
-#if 0
-static int xenet_do_ethtool_ioctl(struct net_device *dev, struct ifreq *rq)
-{
-  struct net_local *lp = netdev_priv(dev);
-  struct ethtool_cmd ecmd;
-  struct ethtool_drvinfo edrv;
-  struct ethtool_pauseparam epp;
-  struct mac_regsDump regs;
-  int ret = -EOPNOTSUPP;
-  u32 Options;
-
-  if (copy_from_user(&ecmd, rq->ifr_data, sizeof(ecmd)))
-    return -EFAULT;
-  switch (ecmd.cmd) {
-  case ETHTOOL_GSET:	/* Get setting. No command option needed w/ ethtool */
-    ret = labx_ethtool_get_settings(dev, &ecmd);
-    if (ret < 0)
-      return -EIO;
-    if (copy_to_user(rq->ifr_data, &ecmd, sizeof(ecmd)))
-      return -EFAULT;
-    ret = 0;
-    break;
-  case ETHTOOL_SSET:	/* Change setting. Use "-s" command option w/ ethtool */
-    ret = labx_ethtool_set_settings(dev, &ecmd);
-    break;
-  case ETHTOOL_GPAUSEPARAM:	/* Get pause parameter information. Use "-a" w/ ethtool */
-    ret = labx_ethtool_get_settings(dev, &ecmd);
-    if (ret < 0)
-      return ret;
-    epp.cmd = ecmd.cmd;
-    epp.autoneg = ecmd.autoneg;
-    Options = labx_eth_GetOptions(&lp->Emac);
-    if (Options & XTE_FCS_INSERT_OPTION) {
-      epp.rx_pause = 1;
-      epp.tx_pause = 1;
-    }
-    else {
-      epp.rx_pause = 0;
-      epp.tx_pause = 0;
-    }
-    if (copy_to_user
-	(rq->ifr_data, &epp, sizeof(struct ethtool_pauseparam)))
-      return -EFAULT;
-    ret = 0;
-    break;
-  case ETHTOOL_SPAUSEPARAM:	/* Set pause parameter. Use "-A" w/ ethtool */
-    return -EOPNOTSUPP;	/* TODO: To support in next version */
-  case ETHTOOL_GRXCSUM:{	/* Get rx csum offload info. Use "-k" w/ ethtool */
-    struct ethtool_value edata = { ETHTOOL_GRXCSUM };
-
-    edata.data =
-      (lp->local_features & LOCAL_FEATURE_RX_CSUM) !=
-      0;
-    if (copy_to_user(rq->ifr_data, &edata, sizeof(edata)))
-      return -EFAULT;
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_SRXCSUM:{	/* Set rx csum offload info. Use "-K" w/ ethtool */
-    struct ethtool_value edata;
-
-    if (copy_from_user(&edata, rq->ifr_data, sizeof(edata)))
-      return -EFAULT;
-
-    if (edata.data) {
-      if (labx_eth_IsRxCsum(&lp->Emac) == TRUE) {
-	lp->local_features |=
-	  LOCAL_FEATURE_RX_CSUM;
-      }
-    }
-    else {
-      lp->local_features &= ~LOCAL_FEATURE_RX_CSUM;
-    }
-
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_GTXCSUM:{	/* Get tx csum offload info. Use "-k" w/ ethtool */
-    struct ethtool_value edata = { ETHTOOL_GTXCSUM };
-
-    edata.data = (dev->features & NETIF_F_IP_CSUM) != 0;
-    if (copy_to_user(rq->ifr_data, &edata, sizeof(edata)))
-      return -EFAULT;
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_STXCSUM:{	/* Set tx csum offload info. Use "-K" w/ ethtool */
-    struct ethtool_value edata;
-
-    if (copy_from_user(&edata, rq->ifr_data, sizeof(edata)))
-      return -EFAULT;
-
-    if (edata.data) {
-      if (labx_eth_IsTxCsum(&lp->Emac) == TRUE) {
-	dev->features |= NETIF_F_IP_CSUM;
-      }
-    }
-    else {
-      dev->features &= ~NETIF_F_IP_CSUM;
-    }
-
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_GSG:{	/* Get ScatterGather info. Use "-k" w/ ethtool */
-    struct ethtool_value edata = { ETHTOOL_GSG };
-
-    edata.data = (dev->features & NETIF_F_SG) != 0;
-    if (copy_to_user(rq->ifr_data, &edata, sizeof(edata)))
-      return -EFAULT;
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_SSG:{	/* Set ScatterGather info. Use "-K" w/ ethtool */
-    struct ethtool_value edata;
-
-    if (copy_from_user(&edata, rq->ifr_data, sizeof(edata)))
-      return -EFAULT;
-
-    if (edata.data) {
-      /* Features for DMA, preserve for future */
-      /*
-	if (labx_eth_IsDma(&lp->Emac)) {
-	dev->features |=
-	NETIF_F_SG | NETIF_F_FRAGLIST;
-	}
-      */
-    }
-    else {
-      dev->features &=
-	~(NETIF_F_SG | NETIF_F_FRAGLIST);
-    }
-
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_GCOALESCE:	/* Get coalescing info. Use "-c" w/ ethtool */
-    /* For the moment, break since no DMA is supported */
-    break;
-
-  case ETHTOOL_SCOALESCE:	/* Set coalescing info. Use "-C" w/ ethtool */
-    /* For the moment, break since no DMA is supported */
-    break;
-
-  case ETHTOOL_GDRVINFO:	/* Get driver information. Use "-i" w/ ethtool */
-    edrv.cmd = edrv.cmd;
-    ret = labx_ethtool_get_drvinfo(dev, &edrv);
-    if (ret < 0) {
-      return -EIO;
-    }
-    edrv.n_stats = XENET_STATS_LEN;
-    if (copy_to_user
-	(rq->ifr_data, &edrv, sizeof(struct ethtool_drvinfo))) {
-      return -EFAULT;
-    }
-    ret = 0;
-    break;
-  case ETHTOOL_GREGS:	/* Get register values. Use "-d" with ethtool */
-    regs.hd.cmd = edrv.cmd;
-    labx_ethtool_get_regs(dev, &(regs.hd), &ret);
-    if (ret < 0) {
-      return ret;
-    }
-    if (copy_to_user
-	(rq->ifr_data, &regs, sizeof(struct mac_regsDump))) {
-      return -EFAULT;
-    }
-    ret = 0;
-    break;
-  case ETHTOOL_GRINGPARAM:	/* Get RX/TX ring parameters. Use "-g" w/ ethtool */
-    /* For the moment, return error since no DMA is supported */
-    return -EFAULT;
-    break;
-
-  case ETHTOOL_NWAY_RST:	/* Restart auto negotiation if enabled. Use "-r" w/ ethtool */
-    return -EOPNOTSUPP;	/* TODO: To support in next version */
-  case ETHTOOL_GSTRINGS:{
-    struct ethtool_gstrings gstrings = { ETHTOOL_GSTRINGS };
-    void *addr = rq->ifr_data;
-    char *strings = NULL;
-
-    if (copy_from_user(&gstrings, addr, sizeof(gstrings))) {
-      return -EFAULT;
-    }
-    switch (gstrings.string_set) {
-    case ETH_SS_STATS:
-      gstrings.len = XENET_STATS_LEN;
-      strings = *labx_ethtool_gstrings_stats;
-      break;
-    default:
-      return -EOPNOTSUPP;
-    }
-    if (copy_to_user(addr, &gstrings, sizeof(gstrings))) {
-      return -EFAULT;
-    }
-    addr += offsetof(struct ethtool_gstrings, data);
-    if (copy_to_user
-	(addr, strings, gstrings.len * ETH_GSTRING_LEN)) {
-      return -EFAULT;
-    }
-    ret = 0;
-    break;
-  }
-  case ETHTOOL_GSTATS:{
-    struct {
-      struct ethtool_stats cmd;
-      uint64_t data[XENET_STATS_LEN];
-    } stats = { {
-	ETHTOOL_GSTATS, XENET_STATS_LEN}};
-
-    stats.data[0] = lp->ndev->stats.tx_packets;
-    stats.data[1] = lp->ndev->stats.tx_dropped;
-    stats.data[2] = lp->ndev->stats.tx_errors;
-    stats.data[3] = lp->ndev->stats.tx_fifo_errors;
-    stats.data[4] = lp->ndev->stats.rx_packets;
-    stats.data[5] = lp->ndev->stats.rx_dropped;
-    stats.data[6] = lp->ndev->stats.rx_errors;
-    stats.data[7] = lp->ndev->stats.rx_fifo_errors;
-    stats.data[8] = lp->ndev->stats.rx_crc_errors;
-    stats.data[9] = lp->max_frags_in_a_packet;
-    stats.data[10] = lp->tx_hw_csums;
-    stats.data[11] = lp->rx_hw_csums;
-
-    if (copy_to_user(rq->ifr_data, &stats, sizeof(stats))) {
-      return -EFAULT;
-    }
-    ret = 0;
-    break;
-  }
-
-  case ETHTOOL_GLINK:{
-    struct ethtool_value edata = { ETHTOOL_GLINK };
-
-    edata.data = (netif_carrier_ok(dev) == 0) ? 0 : 1;
-
-    if (copy_to_user(rq->ifr_data, &edata, sizeof(edata)))
-      return -EFAULT;
-    ret = 0;
-    break;
-  }
-
-  default:
-    return -EOPNOTSUPP;	/* All other operations not supported */
-  }
-  return ret;
-}
-#endif /* DEPRECATED ethtool ioctl() */
 
 static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
@@ -1643,9 +1470,19 @@ static void xtenet_remove_ndev(struct net_device *ndev)
 static int xtenet_remove(struct device *dev)
 {
   struct net_device *ndev = dev_get_drvdata(dev);
+  struct net_local *lp = netdev_priv(ndev);
 
-  unregister_netdev(ndev);
-  xtenet_remove_ndev(ndev);
+  /* Remove the MDIO bus registration if there was one */
+  if (lp->Emac.mdio_bus) {
+    mdiobus_unregister(lp->Emac.mdio_bus);
+    lp->Emac.mdio_bus = NULL;
+  }
+
+  /* Remove the network device registration if there was one */
+  if (ndev) {
+    unregister_netdev(ndev);
+    xtenet_remove_ndev(ndev);
+  }
 
   return 0;		/* success */
 }
@@ -1694,12 +1531,53 @@ static irqreturn_t mdio_interrupt(int irq, void *dev_id)
   return(IRQ_HANDLED);
 }
 
+#ifdef CONFIG_MTD_CFI_OTP_USER
+static int base_otp_reg = REGISTER1;
+module_param(base_otp_reg, int, 0);
+MODULE_PARM_DESC(base_otp_reg, "OTP base register (register containing address for eth0)");
+static int otp_assign_mac_address(void *private_data)
+{
+	struct net_device *ndev = (struct net_device *)private_data;
+    securityword_t otp_mac;
+    struct sockaddr addr;
+    int otpIndex;
+
+    if (sscanf(ndev->name, "eth%d", &otpIndex) == 1) {
+    	read_otp_reg(base_otp_reg + otpIndex, &otp_mac);
+	} else {
+	    otp_mac[0] = 0xff;
+	}
+	if (otp_mac[0] == 0 && otp_mac[1] == 0 &&
+			((otp_mac[2] != 0 && otp_mac[2] != 0xFF) ||
+			(otp_mac[3] != 0 && otp_mac[3] != 0xFF) ||
+			(otp_mac[4] != 0 && otp_mac[4] != 0xFF) ||
+			(otp_mac[5] != 0 && otp_mac[5] != 0xFF) ||
+			(otp_mac[6] != 0 && otp_mac[6] != 0xFF) ||
+			(otp_mac[7] != 0 && otp_mac[7] != 0xFF) )) {
+		addr.sa_data[0] = otp_mac[2];
+		addr.sa_data[1] = otp_mac[3];
+		addr.sa_data[2] = otp_mac[4];
+		addr.sa_data[3] = otp_mac[5];
+		addr.sa_data[4] = otp_mac[6];
+		addr.sa_data[5] = otp_mac[7];
+        printk("%s MAC address %02X:%02X:%02X:%02X:%02X:%02X retrieved from OTP flash\n",
+            ndev->name, (uint8_t)(addr.sa_data[0]), (uint8_t)(addr.sa_data[1]),
+            (uint8_t)(addr.sa_data[2]), (uint8_t)(addr.sa_data[3]),
+            (uint8_t)(addr.sa_data[4]), (uint8_t)(addr.sa_data[5]));
+    	xenet_set_mac_address(ndev, &addr);
+    }
+	return 0;
+}
+
+#endif
 /** Shared device initialization code */
 static int xtenet_setup(struct device *dev,
                         struct resource *r_mem,
                         struct resource *r_irq,
                         struct labx_eth_platform_data *pdata) {
   u32 virt_baddr;		/* virtual base address of TEMAC */
+  u32 versionReg;
+  int major, minor;
   int i;
 
   labx_eth_Config Temac_Config;
@@ -1740,7 +1618,7 @@ static int xtenet_setup(struct device *dev,
   Temac_Config.RxCsum = pdata->rx_csum;
   Temac_Config.PhyType = pdata->phy_type;
   Temac_Config.PhyAddr = pdata->phy_addr;
-
+  Temac_Config.MacWidth = pdata->mac_width;
   /* Request the memory range for the device */
   address_size = (r_mem->end - r_mem->start + 1);
   if(request_mem_region(r_mem->start, address_size, "labx-ethernet") == NULL) {
@@ -1763,6 +1641,13 @@ static int xtenet_setup(struct device *dev,
     rc = -ENODEV;
     goto error;
   }
+  versionReg = labx_eth_ReadReg(lp->Emac.Config.BaseAddress, REVISION_REG);
+  minor = (versionReg & REVISION_MINOR_MASK) >> REVISION_MINOR_SHIFT;
+  major = (versionReg & REVISION_MAJOR_MASK) >> REVISION_MAJOR_SHIFT;
+  lp->Emac.versionReg = versionReg;
+  lp->Emac.MacMatchUnits = (versionReg & REVISION_MATCH_MASK) >> REVISION_MATCH_SHIFT;
+  lp->Emac.dev = ndev;
+
   /* Set the MAC address */
   for (i = 0; i < 6; i++) {
     if (macaddr[i] != 0)
@@ -1772,8 +1657,8 @@ static int xtenet_setup(struct device *dev,
     for (i = 0; i < 6; i++)
       ndev->dev_addr[i] = macaddr[i];
     macaddr[5]++;
-  }
-  else {
+
+  } else {
     /* Use the platform assigned MAC if none specified */
     memcpy(ndev->dev_addr, pdata->mac_addr, 6);
   }
@@ -1785,11 +1670,17 @@ static int xtenet_setup(struct device *dev,
     goto error;
   }
 
-  printk("%s: MAC address is now %02X:%02X:%02X:%02X:%02X:%02X\n",
+#ifdef CONFIG_MTD_CFI_OTP_USER
+  /* Run otp_assign_mac_address() as a thread, because we may not have the OTP
+   * Flash initialized by the time we get here, and the thread can just wait for it.
+   */
+  kthread_run(otp_assign_mac_address, ndev, "otp_assign_mac_address thread");
+#endif
+  /*printk("%s: MAC address is now %02X:%02X:%02X:%02X:%02X:%02X\n",
 	 ndev->name,
 	 pdata->mac_addr[0], pdata->mac_addr[1],
 	 pdata->mac_addr[2], pdata->mac_addr[3],
-	 pdata->mac_addr[4], pdata->mac_addr[5]);
+	 pdata->mac_addr[4], pdata->mac_addr[5]); */
 
   lp->max_frame_size = XTE_MAX_JUMBO_FRAME_SIZE;
   if (ndev->mtu > XTE_JUMBO_MTU)
@@ -1801,7 +1692,7 @@ static int xtenet_setup(struct device *dev,
   Write_Fifo32(lp->Emac, FIFO_RDFR_OFFSET, FIFO_RESET_MAGIC);
 
   /* initialize the netdev structure */
-  ndev->flags &= ~IFF_MULTICAST;
+ndev->flags |= IFF_MULTICAST;
   ndev->watchdog_timeo = TX_TIMEOUT;
   ndev->netdev_ops = &labx_net_device_ops;
   ndev->ethtool_ops = &labx_ethtool_ops;
@@ -1846,11 +1737,8 @@ static int xtenet_setup(struct device *dev,
 
   lp->gmii_addr = lp->Emac.Config.PhyAddr;
 
-  printk("%s: Lab X Tri-mode MAC at 0x%08X, IRQ %d using PHY at MDIO 0x%02X\n",
-	 ndev->name,
-	 r_mem->start,
-	 ndev->irq,
-	 lp->gmii_addr);
+  printk("%s: Lab X Tri-mode MAC Version %d.%d at 0x%08X, IRQ %d using PHY at MDIO 0x%02X, %d MAC Filters\n",
+         ndev->name, major, minor, r_mem->start, (int)ndev->irq, lp->gmii_addr, lp->Emac.MacMatchUnits);
 
   if (pdata->phy_mask != 0) {
     return labx_eth_mdio_bus_init(dev, pdata, &lp->Emac);
@@ -1982,9 +1870,10 @@ static int __devinit xtenet_of_probe(struct platform_device *ofdev, const struct
 
   pdata_struct.tx_csum  = get_u32(ofdev, "xlnx,txcsum");
   pdata_struct.rx_csum  = get_u32(ofdev, "xlnx,rxcsum");
-
+  pdata_struct.mac_width = get_u32(ofdev, "xlnx,mac-port-width");
   /* Connected PHY information */
   pdata_struct.phy_type = get_u32(ofdev, "xlnx,phy-type");
+  pdata_struct.phy_addr = get_u32(ofdev, "xlnx,phy-addr"); //Yi: why don't we have this before?
   phy_addr              = get_u32(ofdev, "xlnx,phy-addr");
 
   pdata->phy_name[0] = '\0';
@@ -2042,6 +1931,8 @@ static int __devexit xtenet_of_remove(struct platform_device *dev)
 
 static struct of_device_id xtenet_of_match[] = {
   { .compatible = "xlnx,labx-ethernet-1.00.a", },
+  { .compatible = "xlnx,labx-ethernet-1.01.a", },
+  { .compatible = "xlnx,labx-ethernet-1.02.a", },
   { /* end of list */ },
 };
 

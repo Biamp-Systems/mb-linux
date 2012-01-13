@@ -8,10 +8,30 @@
 
 menu "Core Applications"
 
+config USER_TI_SRC4392
+	bool "Ti SRC4392 setup for AES interface of CAL ICS"
+	help
+	  Include the CAL panel server.
+	  
+config USER_CAL_OLED
+	bool "CAL OLED button daemon - CAL"
+	help
+	  Include the CAL panel server.
+	  	  
 config USER_DMITRIPANELD
 	bool "D-Mitri Panel daemon - dmitripaneld"
 	help
 	  Include the D-Mitri panel server.
+
+config USER_SCPINSTALL
+	bool "scp installer"
+	help
+	  Include scp-based installer/updater program.
+
+config USER_NANO
+	bool "nano editor"
+	help
+	  Include nano text editor
 
 config USER_INIT_INIT
 	bool "init"
@@ -137,6 +157,16 @@ config USER_MIDILOOPBACK_MIDILOOPBACK
 	bool "midiloopback"
 	help
 	  MIDI Loopback
+
+config USER_MBBL_MKBOOTIMAGE
+	bool "mbbl_mkbootimage"
+	help
+	  MBBL Boot Image Maker
+
+config USER_MTD_STORAGE
+	bool "mtd_storage"
+	help
+	  MTD-based persistent storage of relatively frequently changed files
 
 config USER_AVAHI_AVAHI
 	bool "avahi"
@@ -3924,6 +3954,10 @@ config USER_SYSUTILS_PS
 	  Show process status
 	  Approx. binary size: 12k
 
+config USER_SYSUTILS_XMD
+	bool "xmd"
+	help
+	  The xmd utilities mrd and mwr.
 
 comment "Procps tools"
 

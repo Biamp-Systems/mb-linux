@@ -149,14 +149,23 @@ endif
 ifdef CONFIG_LABX_AUDIO_DEPACKETIZER
 DEVICES += depacketizer0,c,252,0
 DEVICES += depacketizer1,c,252,1
+DEVICES += depacketizer2,c,252,2
+DEVICES += depacketizer3,c,252,3
 endif
 ifdef CONFIG_LABX_PTP
 DEVICES += ptp0,c,253,0
 endif
 
 # Add the Xilinx SPI Master peripheral device node
+DEVICES += \
+	agcontrol0,c,101,0 \
+	agcontrol1,c,101,1 \
+	agcontrol2,c,101,2 \
+	agcontrol3,c,101,3 \
+	agcontrol4,c,101,4
 ifdef CONFIG_XILINX_SPI
-DEVICES += spidev0,c,153,0 \
+DEVICES += \
+	spidev0,c,153,0 \
 	spidev1,c,153,1 \
 	spidev2,c,153,2 \
 	spidev3,c,153,3 \
@@ -203,9 +212,16 @@ romfs:
 	$(ROMFSINST) -s /etc/init.d/network /etc/rc.d/S40network
 	$(ROMFSINST) $(COMMON)/etc/rc/mountfs /etc/init.d/mountfs
 	$(ROMFSINST) -s /etc/init.d/mountfs /etc/rc.d/S50mountfs
+	$(ROMFSINST) $(COMMON)/etc/rc/startapps /etc/init.d/startapps
+	$(ROMFSINST) -s /etc/init.d/startapps /etc/rc.d/S90startapps
+	$(ROMFSINST) $(COMMON)/etc/rc/boa /etc/init.d/boa
+        # Uncomment to autostart the BOA web server
+	# $(ROMFSINST) -s /etc/init.d/boa /etc/rc.d/S60boa
 	$(ROMFSINST) $(COMMON)/etc/avahi-daemon.conf /etc/avahi.orig/avahi-daemon.conf
 	$(ROMFSINST) $(COMMON)/etc/avahi-autoipd.action /etc/avahi.orig/avahi-autoipd.action
 	$(ROMFSINST) $(COMMON)/etc/rc/avahi-autoipd-wrapper /bin/avahi-autoipd-wrapper
+	$(ROMFSINST) $(COMMON)/etc/boa.conf /etc/boa.conf
+	$(ROMFSINST) $(COMMON)/etc/mime.types /etc/mime.types
 
 	# Symbolic link for fstab into configurable area
 	$(ROMFSINST) -e CONFIG_USER_FLATFSD_FLATFSD \
@@ -247,6 +263,9 @@ endif
 
 	$(ROMFSINST) -A "^root:" -a "root:${CRYPT_PASSWD}:0:0::/:/bin/sh" $(ETCDIR)/passwd
 	$(ROMFSINST) -A "^root:" -a "root:x:0:root" $(ETCDIR)/group
+
+	$(ROMFSINST) -A "^nobody:" -a "nobody:x:65534:65534::/var/tmp:/bin/sh" $(ETCDIR)/passwd
+	$(ROMFSINST) -A "^nogroup:" -a "nogroup:x:65534:nobody" $(ETCDIR)/group
 
 	$(ROMFSINST) -A "^avahi:" -a "avahi:x:200:200:Avahi Daemon:/:/bin/false" $(ETCDIR)/passwd
 	$(ROMFSINST) -A "^avahi:" -a "avahi:x:200:avahi" $(ETCDIR)/group

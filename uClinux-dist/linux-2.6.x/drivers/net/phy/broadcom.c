@@ -63,6 +63,10 @@
 #define MII_BCM54XX_SHD_VAL(x)	((x & 0x1f) << 10)
 #define MII_BCM54XX_SHD_DATA(x)	((x & 0x3ff) << 0)
 
+// Control for PHY REG 0x00
+
+#define BCM5481_AUTO_NEGOTIATE_ENABLE           0x1000
+
 /*
  * AUXILIARY CONTROL SHADOW ACCESS REGISTERS.  (PHY REG 0x18)
  */
@@ -72,13 +76,14 @@
 #define MII_BCM54XX_AUXCTL_ACTL_TX_6DB		0x0400
 #define MII_BCM54XX_AUXCTL_ACTL_SMDSP_ENA	0x0800
 
-#define MII_BCM54XX_AUXCTL_MISC_WREN	0x8000
+#define MII_BCM54XX_AUXCTL_MISC_WREN	        0x8000
+#define MII_BCM54XX_AUXCTL_PMII_HPE             0x0040
 #define MII_BCM54XX_AUXCTL_MISC_FORCE_AMDIX	0x0200
 #define MII_BCM54XX_AUXCTL_MISC_RDSEL_MISC	0x7000
-#define MII_BCM54XX_AUXCTL_SHDWSEL_MISC	0x0007
 
+#define MII_BCM54XX_AUXCTL_SHDWSEL_MISC 	0x0007
 #define MII_BCM54XX_AUXCTL_SHDWSEL_AUXCTL	0x0000
-
+#define MII_BCM54XX_AUXCTL_SHDWSEL_PMII         0x0002
 
 /*
  * Broadcom LED source encodings.  These are used in BCM5461, BCM5481,
@@ -417,6 +422,14 @@ static void bcm54xx_adjust_rxrefclk(struct phy_device *phydev)
 		bcm54xx_shadow_write(phydev, BCM54XX_SHD_APD, val);
 }
 
+/* Specify LED default behavior in kernel boot arguments with something like "broadcom.led_default=19,0,1,-1",
+ * where the (exactly) four array values 19,0,1,-1 correspond to the desired default behavior of the LEDs
+ * in broadcom_leds.h (in this case LED1 <= BC_PHY_LED_ACTIVITY, LED2 <= OFF, LED3 <= ON, LED4 <= default).
+ */
+static int led_default[4] = {BC_PHY_LED_DEFAULT, BC_PHY_LED_DEFAULT, BC_PHY_LED_DEFAULT, BC_PHY_LED_DEFAULT};
+module_param_array(led_default, int, NULL, 0);
+MODULE_PARM_DESC(led_default, "Broadcom PHY LEDs default behavior");
+
 void bc_phy_led_set(int phyno, enum BC_PHY_LEDSEL whichLed, enum BC_PHY_LEDVAL val)
 {
 	u16 reg;
@@ -424,30 +437,27 @@ void bc_phy_led_set(int phyno, enum BC_PHY_LEDSEL whichLed, enum BC_PHY_LEDVAL v
 	if (phyno >= MAX_LED_PHYS || (phy = aPhys[phyno]) == 0) {
 		return;
 	}
-	if (val == BC_PHY_LED_OFF) {
-		val = BCM_LED_SRC_ON; /* Yes, I know - it's inverted.  Go figure. */
-	} else if (val == BC_PHY_LED_ON) {
+	if (val == BC_PHY_LED_OFF || val == BC_PHY_LED_OFF_INVERTED) {
 		val = BCM_LED_SRC_OFF;
+	} else if (val == BC_PHY_LED_ON || val == BC_PHY_LED_ON_INVERTED) {
+		val = BCM_LED_SRC_ON;
 	} else if (val >= BC_PHY_LED_LINKSPD1 && val <= BC_PHY_LED_SRC_ON) {
 		val &= 0xf;
+	} else if (whichLed >= BC_PHY_LED1 && whichLed <= BC_PHY_LED4) {
+		val = led_default[whichLed - BC_PHY_LED1];
 	} else {
-		switch(whichLed) {
-		case BC_PHY_LED1:
-			val = BCM_LED_SRC_LINKSPD1;
-			break;
-		case BC_PHY_LED2:
-			val = BCM_LED_SRC_LINKSPD2;
-			break;
-		case BC_PHY_LED3:
-			val = BCM_LED_SRC_ACTIVITYLED;
-			break;
-		case BC_PHY_LED4:
-			val = BCM_LED_SRC_INTR;
-			break;
-		default:
-			val = BCM_LED_SRC_OFF;
-		}
+		val = BCM_LED_SRC_OFF;
 	}
+	if (val == BCM_LED_SRC_OFF &&
+			(led_default[whichLed - BC_PHY_LED1] == BC_PHY_LED_OFF_INVERTED ||
+			led_default[whichLed - BC_PHY_LED1] == BC_PHY_LED_ON_INVERTED)) {
+		val = BCM_LED_SRC_ON;
+	} else if (val == BCM_LED_SRC_ON &&
+			(led_default[whichLed - BC_PHY_LED1] == BC_PHY_LED_OFF_INVERTED ||
+			led_default[whichLed - BC_PHY_LED1] == BC_PHY_LED_ON_INVERTED)) {
+		val = BCM_LED_SRC_OFF;
+	}
+
 	switch (whichLed) {
 	case BC_PHY_LED1:
 		reg = bcm54xx_shadow_read(phy, BCM54XX_SHD_LEDS12);
@@ -472,6 +482,14 @@ void bc_phy_led_set(int phyno, enum BC_PHY_LEDSEL whichLed, enum BC_PHY_LEDVAL v
 	}
 }
 EXPORT_SYMBOL(bc_phy_led_set);
+
+static int bc5481_auto_negotiate_enable;
+module_param(bc5481_auto_negotiate_enable, int, 0);
+MODULE_PARM_DESC(bc5481_auto_negotiate_enable, "Enable Broadcom 5481 auto-negotiate behaviour");
+
+static int bc5481_high_performance_enable;
+module_param(bc5481_high_performance_enable, int, 0);
+MODULE_PARM_DESC(bc5481_high_performance_enable, "Enable Broadcom 5481 high-performance behaviour");
 
 static int bcm54xx_config_init(struct phy_device *phydev)
 {
@@ -508,10 +526,46 @@ static int bcm54xx_config_init(struct phy_device *phydev)
 
 	bcm54xx_phydsp_config(phydev);
 
+	// Enable auto-negotiation and high-performance modes
+	if (bc5481_auto_negotiate_enable != 0) {
+	        reg = phy_read(phydev, 0x00);
+		reg = reg | BCM5481_AUTO_NEGOTIATE_ENABLE;
+		phy_write(phydev, 0x00, reg);
+		printk("Auto-Negotiate Enable: %d (0x%04X) => %d\n",
+	                ((reg & BCM5481_AUTO_NEGOTIATE_ENABLE) != 0), reg,
+	                ((phy_read(phydev, 0x00) & BCM5481_AUTO_NEGOTIATE_ENABLE) != 0));
+	}
+
+	if (bc5481_high_performance_enable != 0) {
+	        reg = phy_read(phydev, 0x18);
+		reg = reg | MII_BCM54XX_AUXCTL_SHDWSEL_PMII | MII_BCM54XX_SHD_WRITE;
+		reg = reg & ~MII_BCM54XX_AUXCTL_PMII_HPE;
+		phy_write(phydev, 0x18, reg);
+		printk("High-Performance Enable: %d (0x%04X) => %d\n",
+		       ((reg & MII_BCM54XX_AUXCTL_PMII_HPE) != 0), reg,
+		       ((phy_read(phydev, 0x18) & MII_BCM54XX_AUXCTL_PMII_HPE) != 0));
+	}
+
 	for (phyaddr = phydev->addr, i = -1; phyaddr != 0; phyaddr >>= 1)
 		++i;
 	if (i >= 0 && i < MAX_LED_PHYS) {
 		aPhys[i] = phydev;
+		if (led_default[0] < 0) {
+			led_default[0] = (bcm54xx_shadow_read(phydev, BCM54XX_SHD_LEDS12) & 0xF) | 0x10;
+		}
+		bc_phy_led_set(i, BC_PHY_LED1, led_default[0]);
+		if (led_default[1] < 0) {
+			led_default[1] = ((bcm54xx_shadow_read(phydev, BCM54XX_SHD_LEDS12) >> 4) & 0xF) | 0x10;
+		}
+		bc_phy_led_set(i, BC_PHY_LED2, led_default[1]);
+		if (led_default[2] < 0) {
+			led_default[2] = (bcm54xx_shadow_read(phydev, BCM54XX_SHD_LEDS34) & 0xF) | 0x10;
+		}
+		bc_phy_led_set(i, BC_PHY_LED3, led_default[2]);
+		if (led_default[3] < 0) {
+			led_default[3] = ((bcm54xx_shadow_read(phydev, BCM54XX_SHD_LEDS34) >> 4) & 0xF) | 0x10;
+		}
+		bc_phy_led_set(i, BC_PHY_LED4, led_default[3]);
 	}
 
 	return 0;
@@ -801,6 +855,115 @@ static int brcm_fet_config_intr(struct phy_device *phydev)
 	return err;
 }
 
+#ifdef DUMP_PHY_REGISTERS
+static void dump_phy_reg(struct phy_device *phydev)
+{
+  unsigned long int val;
+  val = (unsigned long int)phy_read(phydev, MII_PHYSID1) << 16 | phy_read(phydev, MII_PHYSID2);
+  printk("Ethernet PHY registers for phy %d, ID 0x%08lx:\n"
+      "==============================================\n", phydev->addr, val);
+  val = phy_read(phydev, MII_BMCR);
+  printk("0x00 - MII Control register:                           0x%04lx\n", val);
+  val = phy_read(phydev, MII_BMSR);
+  printk("0x01 - MII Status  register:                           0x%04lx\n", val);
+  val = phy_read(phydev, MII_ADVERTISE);
+  printk("0x04 - Auto-negotiation Advertisement register:        0x%04lx\n", val);
+  val = phy_read(phydev, MII_LPA);
+  printk("0x05 - Auto-negotiation Link Partner Ability register: 0x%04lx\n", val);
+  val = phy_read(phydev, MII_EXPANSION);
+  printk("0x06 - Auto-negotiation Expansion register:            0x%04lx\n", val);
+  val = phy_read(phydev, 0x07);
+  printk("0x07 - Next page Transmit register:                    0x%04lx\n", val);
+  val = phy_read(phydev, 0x08);
+  printk("0x08 - Link Partner Received Next Page register:       0x%04lx\n", val);
+  val = phy_read(phydev, MII_CTRL1000);
+  printk("0x09 - 1000Base-T Control register:                    0x%04lx\n", val);
+  val = phy_read(phydev, MII_STAT1000);
+  printk("0x0A - 1000Base-T Status register:                     0x%04lx\n", val);
+  val = phy_read(phydev, MII_ESTATUS);
+  printk("0x0F - IEEE Extended Status register:                  0x%04lx\n", val);
+  val = phy_read(phydev, 0x10);
+  printk("0x10 - IEEE Extended Control register:                 0x%04lx\n", val);
+  val = phy_read(phydev, 0x11);
+  printk("0x11 - PHY Extended Status register:                   0x%04lx\n", val);
+  val = phy_read(phydev, MII_DCOUNTER);
+  printk("0x12 - Receive Error Counter register:                 0x%04lx\n", val);
+  val = phy_read(phydev, MII_FCSCOUNTER);
+  printk("0x13 - False Carrier Sense Counter register:           0x%04lx\n", val);
+  val = phy_read(phydev, MII_NWAYTEST);
+  printk("0x14 - Receiver NOT_OK Counter register:               0x%04lx\n", val);
+  val = bcm54xx_exp_read(phydev, 0);
+  printk("0x17:0 - Receive/Transmit Packet Counter register:     0x%04lx\n", val);
+  val = bcm54xx_exp_read(phydev, 1);
+  printk("0x17:1 - Expansion Interrupt Status register:          0x%04lx\n", val);
+  val = bcm54xx_exp_read(phydev, 4);
+  printk("0x17:4 - Multicolor LED Selector register:             0x%04lx\n", val);
+  val = bcm54xx_exp_read(phydev, 5);
+  printk("0x17:5 - Multicolor LED Flash Rate Controls register:  0x%04lx\n", val);
+  val = bcm54xx_exp_read(phydev, 6);
+  printk("0x17:6 - Multicolor LED Programmable Blink Contrl reg: 0x%04lx\n", val);
+  val = bcm54xx_auxctl_read(phydev, 0);
+  printk("0x18:0 - Auxilary Control register:                    0x%04lx\n", val);
+  val = bcm54xx_auxctl_read(phydev, 1);
+  printk("0x18:1 - 10BaseT register:                             0x%04lx\n", val);
+  val = bcm54xx_auxctl_read(phydev, 2);
+  printk("0x18:2 - Power MII Control register:                   0x%04lx\n", val);
+  val = bcm54xx_auxctl_read(phydev, 4);
+  printk("0x18:4 - Misc Test register:                           0x%04lx\n", val);
+  val = bcm54xx_auxctl_read(phydev, 7);
+  printk("0x18:7 - Misc Control register:                        0x%04lx\n", val);
+  val = phy_read(phydev, 0x19);
+  printk("0x19 - Auxilary Status Summary register:               0x%04lx\n", val);
+  val = phy_read(phydev, MII_RESV2);
+  printk("0x1A - Interrupt Status register:                      0x%04lx\n", val);
+  val = phy_read(phydev, MII_TPISTATUS);
+  printk("0x1B - Interrupt Mask register:                        0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x02);
+  printk("0x1C:2 - Spare Control 1 register:                     0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x03);
+  printk("0x1C:3 - Clock Alignment Control register:             0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x04);
+  printk("0x1C:4 - Spare Control 2 register:                     0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x05);
+  printk("0x1C:5 - Spare Control 3 register:                     0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x08);
+  printk("0x1C:8 - LED Status register:                          0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x09);
+  printk("0x1C:9 - LED Control register:                         0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x0A);
+  printk("0x1C:A - Auto Power-down register:                     0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x0D);
+  printk("0x1C:D - LED Selector 1 register:                      0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x0E);
+  printk("0x1C:E - LED Selector 2 register:                      0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x0F);
+  printk("0x1C:F - LED GPIO Control/Status register:             0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x13);
+  printk("0x1C:13 - SerDES 100BASE-FX Control register:          0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x15);
+  printk("0x1C:15 - SGMII Slave register:                        0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x18);
+  printk("0x1C:18 - SGMII/Media Converter register:              0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x1A);
+  printk("0x1C:1A - Auto-negotiation Debug register:             0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x1B);
+  printk("0x1C:1B - Auxilary 1000BASE-X Control register:        0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x1C);
+  printk("0x1C:1C - Auxilary 1000BASE-X Status register:         0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x1D);
+  printk("0x1C:1D - Misc 1000BASE-X Status register:             0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x1E);
+  printk("0x1C:1E - Copper/Fiber Auto-detect Medium register:    0x%04lx\n", val);
+  val = bcm54xx_shadow_read(phydev, 0x1F);
+  printk("0x1C:1F - Mode Control register:                       0x%04lx\n", val);
+  val = phy_read(phydev, 0x1D);
+  printk("0x1D - PHY Extended Status register:                   0x%04lx\n", val);
+  val = phy_read(phydev, 0x1E);
+  printk("0x1E - HCD Sumary register:                            0x%04lx\n", val);
+  return;
+}
+#endif
+
 /* MII_CTRL1000 register bits */
 #define BCM54610_NORMAL_MASK     (0x1FFF)
 #define BCM54610_TEST_TX_DIST    (0x8000)
@@ -928,6 +1091,59 @@ static struct phy_driver bcm5464_driver = {
 	.driver		= { .owner = THIS_MODULE },
 };
 
+static void bcm5481_set_test_mode(struct phy_device *phydev, u32 mode) {
+  /* Configure the PHY for the selected test mode */
+  /* Note that the bcm5481 works just like the bcm54610 in test mode setup,
+   * so we just reuse the bcm54610 defines */
+  switch(mode) {
+  case PHY_TEST_EXT_LOOP:
+    phy_write(phydev, MII_CTRL1000,
+	      (BCM54610_MST_SLV_MANUAL | BCM54610_MANUAL_MASTER));
+    phy_write(phydev, MII_BMCR, (BMCR_FULLDPLX | BMCR_SPEED1000));
+    phy_write(phydev, MII_LBRERROR,
+	      (BCM54610_LBR_EXT_LOOPBACK | BCM54610_LBR_TX_NORMAL_MODE));
+    phydev->autoneg = AUTONEG_DISABLE;
+    printk("BCM5481 external loopback configured; insert loopback jumper\n");
+    break;
+
+  case PHY_TEST_INT_LOOP:
+    phy_write(phydev, MII_BMCR,
+              (BMCR_LOOPBACK | BMCR_FULLDPLX | BMCR_SPEED1000));
+    phydev->autoneg = AUTONEG_DISABLE;
+    printk("BCM5481 internal loopback configured\n");
+    break;
+
+  case PHY_TEST_TX_WAVEFORM:
+    printk("IEEE 802.3ba Transmit Waveform Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_TX_WAVE);
+    break;
+
+  case PHY_TEST_MASTER_JITTER:
+    printk("IEEE 802.3ba Master Jitter Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_MST_JITTER);
+    break;
+
+  case PHY_TEST_SLAVE_JITTER:
+    printk("IEEE 802.3ba Slave Jitter Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_SLV_JITTER);
+    break;
+
+  case PHY_TEST_TX_DISTORTION:
+    printk("IEEE 802.3ba Transmit Distortion Test mode\n");
+    phy_write(phydev, MII_CTRL1000, BCM54610_TEST_TX_DIST);
+    break;
+
+  default:
+    /* No test mode, normal operation */
+    phy_write(phydev, MII_LBRERROR, BCM54610_LBR_TX_NORMAL_MODE);
+    phy_write(phydev, MII_BMCR, (BMCR_ANENABLE | BMCR_FULLDPLX | BMCR_SPEED1000));
+    phy_write(phydev, MII_CTRL1000,
+              (ADVERTISE_1000FULL | BCM54610_MST_SLV_AUTO));
+    phydev->autoneg = AUTONEG_ENABLE;
+    printk("BCM5481 set for normal operation\n");
+  }
+}
+
 static struct phy_driver bcm5481_driver = {
 	.phy_id		= PHY_ID_BCM5481,
 	.phy_id_mask	= 0xfffffff0,
@@ -940,7 +1156,8 @@ static struct phy_driver bcm5481_driver = {
 	.read_status	= genphy_read_status,
 	.ack_interrupt	= bcm54xx_ack_interrupt,
 	.config_intr	= bcm54xx_config_intr,
-	.driver		= { .owner = THIS_MODULE },
+	.set_test_mode  = bcm5481_set_test_mode,
+	.driver 	= { .owner = THIS_MODULE },
 };
 
 static struct phy_driver bcm5482_driver = {

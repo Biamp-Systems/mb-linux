@@ -106,9 +106,15 @@ static inline int phy_aneg_done(struct phy_device *phydev)
 {
 	int retval;
 
+	if (strcmp(phydev->drv->name,"Puma AEL2005")==0)
+	{
+  	return 1;
+  }
+  
 	retval = phy_read(phydev, MII_BMSR);
 
 	return (retval < 0) ? retval : (retval & BMSR_ANEGCOMPLETE);
+	
 }
 
 /* A structure for mapping a particular speed and duplex
@@ -253,7 +259,8 @@ int phy_ethtool_sset(struct phy_device *phydev, struct ethtool_cmd *cmd)
 		return -EINVAL;
 
 	if (cmd->autoneg == AUTONEG_DISABLE &&
-	    ((cmd->speed != SPEED_1000 &&
+	    ((cmd->speed != SPEED_10000 &&
+          cmd->speed != SPEED_1000 &&
 	      cmd->speed != SPEED_100 &&
 	      cmd->speed != SPEED_10) ||
 	     (cmd->duplex != DUPLEX_HALF &&
@@ -779,7 +786,7 @@ void phy_state_machine(struct work_struct *work)
 		case PHY_STARTING:
 		case PHY_READY:
 		case PHY_PENDING:
-			break;
+		  break;
 		case PHY_UP:
 			needs_aneg = 1;
 
@@ -788,10 +795,10 @@ void phy_state_machine(struct work_struct *work)
 			break;
 		case PHY_AN:
 			err = phy_read_status(phydev);
-
 			if (err < 0)
+			{ 
 				break;
-
+      }
 			/* If the link is down, give up on
 			 * negotiation for now */
 			if (!phydev->link) {
@@ -800,13 +807,13 @@ void phy_state_machine(struct work_struct *work)
 				phydev->adjust_link(phydev->attached_dev);
 				break;
 			}
-
 			/* Check if negotiation is done.  Break
 			 * if there's an error */
 			err = phy_aneg_done(phydev);
 			if (err < 0)
+			{
 				break;
-
+      }
 			/* If AN is done, we're running */
 			if (err > 0) {
 				phydev->state = PHY_RUNNING;
@@ -821,7 +828,6 @@ void phy_state_machine(struct work_struct *work)
 				 * we try again */
 				if (phydev->drv->flags & PHY_HAS_MAGICANEG)
 					break;
-
 				/* The timer expired, and we still
 				 * don't have a setting, so we try
 				 * forcing it until we find one that
@@ -833,7 +839,6 @@ void phy_state_machine(struct work_struct *work)
 				phydev->duplex = settings[idx].duplex;
 
 				phydev->autoneg = AUTONEG_DISABLE;
-
 				pr_info("Trying %d/%s\n", phydev->speed,
 						DUPLEX_FULL ==
 						phydev->duplex ?
@@ -904,7 +909,6 @@ void phy_state_machine(struct work_struct *work)
 			}
 			break;
 		case PHY_RESUMING:
-
 			err = phy_clear_interrupt(phydev);
 
 			if (err)
