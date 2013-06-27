@@ -806,6 +806,7 @@ static int netlink_thread(void *data)
 
     streamStatusGeneration = depacketizer->streamStatusGeneration;
 
+#ifdef SOFTWARE_MUTE_ENABLED
     // Software based muting: If a stream's status has changed from Active to Inactive, then
     // zero the channel sample buffers associated with the stream.  For each of the 128 possible
     // streams, check for an Active to Inactive transition and clear the buffer if it has occurred.
@@ -838,6 +839,7 @@ static int netlink_thread(void *data)
         channelIndex += 32;
       }
     }
+#endif
 
     audio_depacketizer_stream_event(depacketizer);
 
