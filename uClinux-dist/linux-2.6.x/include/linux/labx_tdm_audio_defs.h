@@ -73,11 +73,14 @@ typedef struct {
 typedef struct {
   uint32_t versionMajor;
   uint32_t versionMinor;
+  uint32_t numTransmitters;
+  uint32_t numReceivers;
   uint32_t laneCount;
   uint32_t mclkRatio;
   uint32_t maxNumStreams;
   uint32_t maxSlotDensity;
-  uint32_t maxBurstLength;
+  uint32_t minBurstLength;
+  uint32_t maxBurstMultiple;
   uint32_t hasLoopback;
   uint32_t hasSlaveManager;
   uint32_t hasAnalyzer;
@@ -88,7 +91,7 @@ typedef struct {
 typedef enum {
   SLOT_DENSITY,
   NUM_CHANNELS,
-  BURST_LENGTH,
+  BURST_LENGTH_MULTIPLE,
   I2S_ALIGN,
   LR_CLOCK_MODE,
   SAMPLE_EDGE,
@@ -105,7 +108,7 @@ typedef enum {
 typedef struct {
   uint32_t slotDensity;
   uint32_t numChannels;
-  uint32_t burstLength;
+  uint32_t burstLengthMultiple;
   uint32_t i2sAlign;
   uint32_t lrClockMode; 
   uint32_t sampleEdge;
@@ -141,8 +144,8 @@ enum TdmErrno {
   EMCLKDTOOHIGH,
   EMCLKDNOTSUPPORTED,
   ESCMNOTIMPL,
-  EBADBURSTLEN,
-  ETDMERRCNT = EBADBURSTLEN - LABX_TDM_AUDIO_ERRNO_BASE
+  EBADBURSTLENMUL,
+  ETDMERRCNT = EBADBURSTLENMUL - LABX_TDM_AUDIO_ERRNO_BASE
 };
 
 #ifndef __KERNEL__
@@ -159,7 +162,7 @@ const char* labxTdmAudioErrnoStrings[ETDMERRCNT] = {
   "Master clock divider brings master clock below nominal frequency",
   "Master clock divider value not supported",
   "Slave clock manager not implemented",
-  "Invalid burst length"
+  "Invalid burst length divider"
 };
 #else
 extern const char* labxTdmAudioErrnoStrings[ETDMERRCNT];
