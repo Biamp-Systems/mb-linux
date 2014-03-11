@@ -321,6 +321,11 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
         }
       }
 
+      if (ptp->properties.packetType == PTP_IPv4) {
+        /* Buffer Length (4) + UPD(8) + IP(20) byte offset*/
+        ptp->packetOffset = 8+20;
+      }
+
       /* Convert the millisecond values for RTC lock settings into timer ticks.
        * Pre-calculating this avoids several divisions in the real-time code.
        */
@@ -388,6 +393,9 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
 
       /* Copy writeable data to the port structure */
       memcpy(ptp->ports[properties.portNumber].portProperties.sourceMacAddress, properties.sourceMacAddress, MAC_ADDRESS_BYTES);
+
+      /* Copy IPV4 Address to port structure */
+      memcpy(ptp->ports[properties.portNumber].portProperties.ipv4Address, properties.ipv4Address, IPV4_ADDRESS_BYTES);
 
       /* Reload the packet templates to propagate the new configuration information. */
       init_tx_templates(ptp, properties.portNumber);
@@ -813,6 +821,7 @@ static int ptp_probe(const char *name,
   ptp->notifier.notifier_call = ptp_device_event;
 
   ptp->timerTicks = 0;
+  ptp->packetOffset = 0;
 
   if (register_netdevice_notifier(&ptp->notifier) != 0)
   {

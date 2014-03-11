@@ -373,7 +373,7 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
     preempt_enable();
 
     /* Retrieve the scaled rate offset */
-    ptp->ports[port].cumulativeScaledRateOffset = get_cumulative_scaled_rate_offset_field(rxBuffer);
+    ptp->ports[port].cumulativeScaledRateOffset = get_cumulative_scaled_rate_offset_field(ptp,rxBuffer);
 
     /* Treat GM phase change just like a GM change */
     if (get_gm_time_base_indicator_field(rxBuffer) != ptp->lastGmTimeBaseIndicator) {
@@ -382,7 +382,7 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
 
       ptp->lastGmTimeBaseIndicator = get_gm_time_base_indicator_field(rxBuffer);
       get_gm_phase_change_field(rxBuffer, &ptp->lastGmPhaseChange);
-      ptp->lastGmFreqChange = get_gm_freq_change_field(rxBuffer);
+      ptp->lastGmFreqChange = get_gm_freq_change_field(ptp,rxBuffer);
     }
 
     /* Compare the timestamps; if the one-way offset plus delay is greater than
@@ -816,6 +816,13 @@ void init_state_machines(struct ptp_device *ptp) {
   ptp->prevAppliedRtcIncrement = 0;
 
   ptp->lastGmTimeBaseIndicator = 0;
+
+  if(ptp->properties.delayMechanism == PTP_DELAY_MECHANISM_E2E) {
+    for(i=0; i<ptp->numPorts; i++) {
+      ptp->ports[i].selectedRole = PTP_MASTER;
+      /* TODO - Implement proper 1588-2008 9.2 state machine */
+    }
+  }
 
 #ifndef CONFIG_LABX_PTP_NO_TASKLET
   tasklet_init(&ptp->rxTasklet, &labx_ptp_rx_state_task, (unsigned long) ptp);

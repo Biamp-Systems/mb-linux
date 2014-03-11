@@ -26,6 +26,31 @@
 
 #include "labx_ptp.h"
 
+static uint8_t ipv4PrimaryMCastAddress[] = { 244, 0, 1, 129};
+static uint8_t ipv4PDelayMCastAddress[]  = { 244, 0, 1, 107};
+
+uint16_t in_cksum(uint8_t * bufferBase, uint32_t *wordOffset) {
+    uint32_t  sum = 0;
+    uint16_t  answer = 0;
+    uint16_t  idx = 0;
+
+    uint32_t val = read_packet(bufferBase,wordOffset);
+    sum = (val & 0x0000FFFF);
+
+    for (idx=0;idx<4;++idx)  {
+      uint32_t val = read_packet(bufferBase,wordOffset);
+      sum += (((val & 0xFFFF0000)>> 16) + (val & 0x0000FFFF));
+    }
+
+    val = read_packet(bufferBase,wordOffset);
+    sum += ((val & 0xFFFF0000) >> 16);
+
+    sum = (sum >> 16) + (sum & 0xffff);
+    sum += (sum >> 16);
+    answer = ~sum;
+    return(answer);
+  }
+
 /**
  * Packet transmission methods
  */
@@ -35,8 +60,12 @@
  */
 static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBuffer,
                             uint32_t *wordOffset, uint32_t messageType,
-                            uint32_t messageLength, uint16_t headerFlags) {
+                            uint32_t messageLength, uint16_t headerFlags,
+                            uint8_t *dstIpAddress, uint16_t dstPort) {
   uint32_t packetWord;
+  uint16_t ckSum=0;
+  uint16_t saveOffset=0;
+  uint32_t savePacketWord=0;
   PtpPortProperties *portProperties = &ptp->ports[port].portProperties;
 
   /* Locate the requested buffer and begin with the packet's transmit length
@@ -44,7 +73,11 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
    * minus one full port word, in bytes (which differs between 100M/1G and 10G).
    */
   *wordOffset = 0;
-  write_packet(txBuffer, wordOffset, (ETH_HEADER_BYTES + messageLength - TX_LENGTH_SUB(ptp)));
+  if (ptp->properties.packetType == PTP_IPv4) {
+    write_packet(txBuffer, wordOffset, (ETH_HEADER_BYTES + IPV4_HEADER_BYTES + IPV4_UDP_HEADER_BYTES + messageLength - TX_LENGTH_SUB(ptp)));
+  } else {
+    write_packet(txBuffer, wordOffset, (ETH_HEADER_BYTES + messageLength - TX_LENGTH_SUB(ptp)));
+  }
 
   /* Now begin at the Tx data base, which differs based upon port width */
   *wordOffset = TX_DATA_OFFSET(ptp);
@@ -68,9 +101,16 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
     packetWord |= portProperties->sourceMacAddress[1];
     write_packet(txBuffer, wordOffset, packetWord);
   } else {
-    /* End-to-end (legacy PTP 2.0) */
-    write_packet(txBuffer, wordOffset, 0x011B1900);
-    packetWord = 0x00000000;
+    /* End-to-end (legacy PTP 2.0 (Layer 2 & UDP/IPv4) ) */
+    if (ptp->properties.packetType == PTP_IPv4) {
+      /* IPv4 Multicast, derive Multicast Destination Ethernet from IP address*/
+      packetWord = 0x01005E00 | (dstIpAddress[2] & 0x7F);
+      write_packet(txBuffer, wordOffset, packetWord);
+      packetWord =  (dstIpAddress[1] << 24) | (dstIpAddress[0] << 16);
+    } else {
+      write_packet(txBuffer, wordOffset, 0x011B1900);
+      packetWord = 0x00000000;
+    }
     packetWord |= (portProperties->sourceMacAddress[0] << 8);
     packetWord |= portProperties->sourceMacAddress[1];
     write_packet(txBuffer, wordOffset, packetWord);
@@ -81,12 +121,75 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
   packetWord |= portProperties->sourceMacAddress[5];
   write_packet(txBuffer, wordOffset, packetWord);
 
-  /* PTP EtherType and the first two PTP header bytes */
-  packetWord = (PTP_ETHERTYPE << 16);
-  packetWord |= (TS_SPEC_ETH_AVB << 12);
-  packetWord |= ((messageType & MSG_TYPE_MASK) << 8);
-  packetWord |= PTP_VERSION_2_0;
-  write_packet(txBuffer, wordOffset, packetWord);
+  if (ptp->properties.packetType == PTP_IPv4) {
+    /* Ethertype + First 2 bytes of IPv4 header */
+    packetWord = (IPV4_ETHERTYPE << 16);
+    packetWord |= (IPV4_VERSION << 12);
+    packetWord |= (IPV4_IHL << 8);
+    packetWord |= ((ptp->properties.dscp & IPV4_DSCP_MASK) << 2);
+    packetWord |= (IPV4_ECN);
+    write_packet(txBuffer, wordOffset, packetWord);
+
+    /* IPv4 Total Length -> Identification */
+    packetWord = ((IPV4_HEADER_BYTES+IPV4_UDP_HEADER_BYTES+messageLength) << 16);
+    packetWord |= (IPV4_ID);
+    write_packet(txBuffer, wordOffset, packetWord);
+
+    /* IPv4 Flags -> Protocol */
+    packetWord = (IPV4_FLAGS << 29);
+    packetWord |= (IPV4_FRAGMENT_OFFSET << 16);
+    packetWord |= (IPV4_TTL << 8);
+    packetWord |= (IPV4_PROTOCOL);
+    write_packet(txBuffer, wordOffset, packetWord);
+
+    /* 0 Checksum, calculate later + first 2 bytes of source IP */
+    packetWord = (ptp->ports[port].portProperties.ipv4Address[0] << 8);
+    packetWord |= (ptp->ports[port].portProperties.ipv4Address[1]);
+    savePacketWord = packetWord;
+    write_packet(txBuffer, wordOffset, packetWord);
+
+    /* Final 2 bytes of Ipv4 Source IP Address + first 2 bytes of destination IP*/
+    packetWord  = (ptp->ports[port].portProperties.ipv4Address[2] << 24);
+    packetWord |= (ptp->ports[port].portProperties.ipv4Address[3] << 16);
+    packetWord |= (dstIpAddress[0] << 8);
+    packetWord |= dstIpAddress[1];
+    write_packet(txBuffer, wordOffset, packetWord);
+
+    /* Final 2 bytes of Ipv4 Destination IP Address + First 2 bytes of UDP headers (source port(0))*/
+    packetWord = dstPort; /* Use destination port for source port */
+    packetWord |= (dstIpAddress[2] << 24);
+    packetWord |= (dstIpAddress[3] << 16);
+    write_packet(txBuffer, wordOffset, packetWord);
+
+    /* Move to start of IP header & Calculate header checksum*/
+    *wordOffset = IPV4_QUADLET4_OFFSET + TX_DATA_OFFSET(ptp);
+    ckSum = in_cksum(txBuffer,wordOffset);
+    packetWord = (ckSum << 16) | savePacketWord;
+    *wordOffset = IPV4_QUADLET7_OFFSET + TX_DATA_OFFSET(ptp);
+    write_packet(txBuffer,wordOffset,packetWord);
+
+    /* UDP Headers */
+    *wordOffset = IPV4_QUADLET10_OFFSET + TX_DATA_OFFSET(ptp);
+
+    /* Destination Port + Length*/
+    packetWord  = (dstPort << 16);
+    packetWord |= (IPV4_UDP_HEADER_BYTES+messageLength);
+    write_packet(txBuffer,wordOffset,packetWord);
+
+    /* UDP Checksum (0) + First 2 PTP header bytes */
+    packetWord = (TS_SPEC_ETH_AVB << 12);
+    packetWord |= ((messageType & MSG_TYPE_MASK) << 8);
+    packetWord |= PTP_VERSION_2_0;
+    write_packet(txBuffer, wordOffset, packetWord);
+
+  } else {
+    /* PTP EtherType and the first two PTP header bytes */
+    packetWord = (PTP_ETHERTYPE << 16);
+    packetWord |= (TS_SPEC_ETH_AVB << 12);
+    packetWord |= ((messageType & MSG_TYPE_MASK) << 8);
+    packetWord |= PTP_VERSION_2_0;
+    write_packet(txBuffer, wordOffset, packetWord);
+  }
 
   /* Message length, domain number, and reserved field */
   packetWord = ((messageLength & MSG_LENGTH_MASK) << 16);
@@ -146,7 +249,7 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
   case MSG_PDELAY_RESP_FUP:
     write_packet(txBuffer, wordOffset, 0x0000057F);
     break;
-  
+
   default:
     write_packet(txBuffer, wordOffset, 0x00000500);
   }
@@ -166,7 +269,7 @@ static void init_announce_template(struct ptp_device *ptp, uint32_t port, PtpPri
   txBuffer = get_output_buffer(ptp,port,PTP_TX_ANNOUNCE_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_ANNOUNCE,
                   PTP_ANNOUNCE_LENGTH + TLV_HEADER_LENGTH + PATH_TRACE_TLV_LENGTH(ptp->pathTraceLength),
-                  (uint16_t) (FLAG_PTP_TIMESCALE));
+                  (uint16_t) (FLAG_PTP_TIMESCALE),ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   /* Clear originTimestamp and set currentUtcOffset */
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -199,21 +302,23 @@ static void init_announce_template(struct ptp_device *ptp, uint32_t port, PtpPri
                PATH_TRACE_TLV_TYPE;
   write_packet(txBuffer, &wordOffset, packetWord);
 
-  /* Add the path trace TLV info. */
-  packetWord = (PATH_TRACE_TLV_LENGTH(ptp->pathTraceLength) << 16);
-  for (i=0; i<ptp->pathTraceLength; i++) {
-    packetWord |= (ptp->pathTrace[i][0] << 8) |
-                   ptp->pathTrace[i][1];
+  if (ptp->properties.packetType == PTP_Layer2) {
+    /* Add the path trace TLV info. */
+    packetWord = (PATH_TRACE_TLV_LENGTH(ptp->pathTraceLength) << 16);
+    for (i=0; i<ptp->pathTraceLength; i++) {
+      packetWord |= (ptp->pathTrace[i][0] << 8) |
+                    ptp->pathTrace[i][1];
+      write_packet(txBuffer, &wordOffset, packetWord);
+      packetWord = (ptp->pathTrace[i][2] << 24) |
+                  (ptp->pathTrace[i][3] << 16) |
+                  (ptp->pathTrace[i][4] << 8) |
+                    ptp->pathTrace[i][5];
+      write_packet(txBuffer, &wordOffset, packetWord);
+      packetWord = (ptp->pathTrace[i][6] << 24) |
+                  (ptp->pathTrace[i][7] << 16);
+    }
     write_packet(txBuffer, &wordOffset, packetWord);
-    packetWord = (ptp->pathTrace[i][2] << 24) |
-                 (ptp->pathTrace[i][3] << 16) |
-                 (ptp->pathTrace[i][4] << 8) |
-                  ptp->pathTrace[i][5];
-    write_packet(txBuffer, &wordOffset, packetWord);
-    packetWord = (ptp->pathTrace[i][6] << 24) |
-                 (ptp->pathTrace[i][7] << 16);
   }
-  write_packet(txBuffer, &wordOffset, packetWord);
 }
 
 /* Initializes the SYNC message transmit template */
@@ -224,7 +329,7 @@ static void init_sync_template(struct ptp_device *ptp, uint32_t port) {
   /* Initialize the header, and clear the originTimestamp for good measure. */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_SYNC_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_SYNC, PTP_SYNC_LENGTH,
-                  (uint16_t) FLAG_TWO_STEP);
+                  (uint16_t) FLAG_TWO_STEP,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
   txBuffer = get_output_buffer(ptp, port, PTP_TX_SYNC_BUFFER);
   write_packet(txBuffer , &wordOffset, 0x00000000);
   write_packet(txBuffer , &wordOffset, 0x00000000);
@@ -241,7 +346,7 @@ static void init_fup_template(struct ptp_device *ptp, uint32_t port) {
   txBuffer = get_output_buffer(ptp, port, PTP_TX_FUP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_FUP,
                   PTP_FUP_LENGTH + TLV_HEADER_LENGTH + FOLLOW_UP_INFORMATION_TLV_LENGTH,
-                  (uint16_t) FLAG_NONE);
+                  (uint16_t) FLAG_NONE,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -253,11 +358,11 @@ static void init_fup_template(struct ptp_device *ptp, uint32_t port) {
   write_packet(txBuffer, &wordOffset, packetWord);
   write_packet(txBuffer, &wordOffset, 0xC2000001);
   write_packet(txBuffer, &wordOffset, 0x00000000); /* TODO: rate ratio is 1.0 unless we can forward */
-  write_packet(txBuffer, &wordOffset, 0x00000000); 
-  write_packet(txBuffer, &wordOffset, 0x00000000); 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
-  write_packet(txBuffer, &wordOffset, 0x00000000); 
+  write_packet(txBuffer, &wordOffset, 0x00000000);
+  write_packet(txBuffer, &wordOffset, 0x00000000);
+  write_packet(txBuffer, &wordOffset, 0x00000000);
 }
 
 /* Initializes the DELAY_REQ message transmit template */
@@ -268,7 +373,7 @@ static void init_delay_request_template(struct ptp_device *ptp, uint32_t port) {
   /* Initialize the header, and clear the originTimestamp for good measure */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_DELAY_REQ_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_DELAY_REQ,
-                  PTP_DELAY_REQ_LENGTH, (uint16_t) FLAG_NONE);
+                  PTP_DELAY_REQ_LENGTH, (uint16_t) FLAG_NONE,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -285,7 +390,7 @@ static void init_delay_response_template(struct ptp_device *ptp, uint32_t port) 
    */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_DELAY_RESP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_DELAY_RESP,
-                  PTP_DELAY_RESP_LENGTH, (uint16_t) FLAG_NONE);
+                  PTP_DELAY_RESP_LENGTH, (uint16_t) FLAG_NONE,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -308,7 +413,7 @@ static void init_pdelay_request_template(struct ptp_device *ptp, uint32_t port) 
    */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_PDELAY_REQ_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_PDELAY_REQ,
-                  PTP_PDELAY_REQ_LENGTH, (uint16_t) FLAG_NONE);
+                  PTP_PDELAY_REQ_LENGTH, (uint16_t) FLAG_NONE,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -327,7 +432,7 @@ static void init_pdelay_response_template(struct ptp_device *ptp, uint32_t port)
    */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_PDELAY_RESP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_PDELAY_RESP,
-                  PTP_PDELAY_RESP_LENGTH, (uint16_t) FLAG_TWO_STEP);
+                  PTP_PDELAY_RESP_LENGTH, (uint16_t) FLAG_TWO_STEP,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -349,7 +454,7 @@ static void init_pdelay_response_fup_template(struct ptp_device *ptp, uint32_t p
   txBuffer = get_output_buffer(ptp,port,PTP_TX_PDELAY_RESP_FUP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset,
                   MSG_PDELAY_RESP_FUP, PTP_PDELAY_RESP_FUP_LENGTH,
-                  (uint16_t) FLAG_NONE);
+                  (uint16_t) FLAG_NONE,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -387,11 +492,11 @@ static void set_sequence_id(struct ptp_device *ptp, uint32_t port, uint8_t * txB
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the sequence ID in the packet */
-  wordOffset = SEQUENCE_ID_OFFSET;
+  wordOffset = ptp->packetOffset + SEQUENCE_ID_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0x0000FFFF;
   packetWord |= (sequenceId << 16);
-  wordOffset = SEQUENCE_ID_OFFSET;
+  wordOffset = ptp->packetOffset + SEQUENCE_ID_OFFSET;
   write_packet(bufferBase, &wordOffset, packetWord);
 }
 
@@ -406,7 +511,7 @@ uint16_t get_sequence_id(struct ptp_device *ptp, uint32_t port, PacketDirection 
 
 
   /* Locate the sequence ID in the packet */
-  wordOffset = SEQUENCE_ID_OFFSET;
+  wordOffset = ptp->packetOffset + SEQUENCE_ID_OFFSET;
   return((uint16_t) (read_packet(bufferBase, &wordOffset) >> 16));
 }
 
@@ -421,11 +526,11 @@ static void set_log_message_interval(struct ptp_device *ptp, uint32_t port, uint
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the sequence ID in the packet */
-  wordOffset = LOG_MSG_INTERVAL_OFFSET;
+  wordOffset = ptp->packetOffset + LOG_MSG_INTERVAL_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0xFFFFFF00;
   packetWord |= logMsgInterval;
-  wordOffset = LOG_MSG_INTERVAL_OFFSET;
+  wordOffset = ptp->packetOffset + LOG_MSG_INTERVAL_OFFSET;
   write_packet(bufferBase, &wordOffset, packetWord);
 }
 
@@ -439,7 +544,7 @@ void get_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection buffer
   bufferBase = (bufferDirection == TRANSMITTED_PACKET) ? packetBuffer + TX_DATA_OFFSET(ptp) : packetBuffer;
 
   /* Locate the timestamp in the packet */
-  wordOffset = TIMESTAMP_OFFSET;
+  wordOffset = ptp->packetOffset + TIMESTAMP_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   timestamp->secondsUpper = (packetWord >> 16);
   timestamp->secondsLower = (packetWord << 16);
@@ -459,7 +564,7 @@ void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t * rxBuf
   /* Presume we are dealing with less than a second of correction */
   correctionField->secondsUpper = 0;
   correctionField->secondsLower = 0;
-  wordOffset = CORRECTION_FIELD_OFFSET;
+  wordOffset = ptp->packetOffset + CORRECTION_FIELD_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
   rawField = ((int64_t) (packetWord & 0x0000FFFF) << 48);
   packetWord = read_packet(rxBuffer, &wordOffset);
@@ -484,7 +589,7 @@ static void set_gm_time_base_indicator(struct ptp_device *ptp, uint8_t * txBuffe
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the time base in the packet */
-  wordOffset = GM_TIME_BASE_INDICATOR_OFFSET;
+  wordOffset = ptp->packetOffset + GM_TIME_BASE_INDICATOR_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0x0000FFFF;
   packetWord |= ((uint32_t) ptp->lastGmTimeBaseIndicator << 16);
@@ -496,7 +601,7 @@ static void set_gm_time_base_indicator(struct ptp_device *ptp, uint8_t * txBuffe
 void get_gm_phase_change_field(uint8_t *rxBuffer, Integer96 *lastGmPhaseChange) {
   uint32_t packetWord;
   uint32_t wordOffset = GM_PHASE_CHANGE_OFFSET;
-   
+
   lastGmPhaseChange->upper = ((read_packet(rxBuffer, &wordOffset) & 0x0000FFFF) << 16);
   packetWord = read_packet(rxBuffer, &wordOffset);
   lastGmPhaseChange->upper |= ((packetWord & 0xFFFF0000) >> 16);
@@ -518,21 +623,21 @@ static void set_gm_phase_change(struct ptp_device *ptp, uint8_t * txBuffer) {
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the phase change in the packet */
-  wordOffset = GM_PHASE_CHANGE_OFFSET;
+  wordOffset = ptp->packetOffset + GM_PHASE_CHANGE_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0xFFFF0000;
   packetWord |= (ptp->lastGmPhaseChange.upper >> 16);
   wordOffset -= BYTES_PER_WORD;
   write_packet(bufferBase, &wordOffset, packetWord);
-  
+
   packetWord = (((ptp->lastGmPhaseChange.upper) << 16) |
                 (ptp->lastGmPhaseChange.middle >> 16));
   write_packet(bufferBase, &wordOffset, packetWord);
-  
+
   packetWord = (((ptp->lastGmPhaseChange.middle) << 16) |
                 (ptp->lastGmPhaseChange.lower >> 16));
   write_packet(bufferBase, &wordOffset, packetWord);
-  
+
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0x0000FFFF;
   packetWord |= (ptp->lastGmPhaseChange.lower << 16);
@@ -541,10 +646,10 @@ static void set_gm_phase_change(struct ptp_device *ptp, uint8_t * txBuffer) {
 }
 
 /* Get the scaledLastGmFreqChange from the follow-up TLV */
-uint16_t get_gm_freq_change_field(uint8_t *rxBuffer) {
+uint16_t get_gm_freq_change_field(struct ptp_device *ptp, uint8_t *rxBuffer) {
   uint32_t packetWord;
-  uint32_t wordOffset = GM_FREQ_CHANGE_OFFSET;
-  
+  uint32_t wordOffset = ptp->packetOffset + GM_FREQ_CHANGE_OFFSET;
+
   packetWord = ((read_packet(rxBuffer, &wordOffset) & 0x0000FFFF) << 16);
   packetWord |= ((read_packet(rxBuffer, &wordOffset) & 0xFFFF0000) >> 16);
 
@@ -560,7 +665,7 @@ static void set_gm_freq_change(struct ptp_device *ptp, uint8_t * txBuffer) {
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the time base in the packet */
-  wordOffset = GM_FREQ_CHANGE_OFFSET;
+  wordOffset = ptp->packetOffset + GM_FREQ_CHANGE_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0xFFFF0000;
   packetWord |= (ptp->lastGmFreqChange >> 16);
@@ -576,14 +681,14 @@ static void set_gm_freq_change(struct ptp_device *ptp, uint8_t * txBuffer) {
 
 
 /* Get the cumulative scaled rate offset from the follow-up TLV */
-uint32_t get_cumulative_scaled_rate_offset_field(uint8_t *rxBuffer) {
-  uint32_t wordOffset = CUMULATIVE_SCALED_RATE_OFFSET_OFFSET;
+uint32_t get_cumulative_scaled_rate_offset_field(struct ptp_device *ptp, uint8_t *rxBuffer) {
+  uint32_t wordOffset = ptp->packetOffset + CUMULATIVE_SCALED_RATE_OFFSET_OFFSET;
   return read_packet(rxBuffer, &wordOffset);
 }
 
 /* Set the cumulative scaled rate offset in the follow-up TLV */
 void set_cumulative_scaled_rate_offset_field(struct ptp_device *ptp, uint8_t *txBuffer, int32_t scaledRateOffset) {
-  uint32_t wordOffset = CUMULATIVE_SCALED_RATE_OFFSET_OFFSET + TX_DATA_OFFSET(ptp);
+  uint32_t wordOffset = ptp->packetOffset + CUMULATIVE_SCALED_RATE_OFFSET_OFFSET + TX_DATA_OFFSET(ptp);
   return write_packet(txBuffer, &wordOffset, scaledRateOffset);
 }
 
@@ -626,7 +731,7 @@ static void set_timestamp(struct ptp_device *ptp, uint32_t port, uint8_t * txBuf
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the timestamp in the packet */
-  wordOffset = TIMESTAMP_OFFSET;
+  wordOffset = ptp->packetOffset + TIMESTAMP_OFFSET;
   packetWord = ((((uint32_t) timestamp->secondsUpper) << 16) |
                 (timestamp->secondsLower >> 16));
   write_packet(bufferBase, &wordOffset, packetWord);
@@ -651,7 +756,7 @@ static void update_correction_field(struct ptp_device *ptp,
   bufferBase =  txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the correction field in the packet */
-  wordOffset = CORRECTION_FIELD_OFFSET;
+  wordOffset = ptp->packetOffset + CORRECTION_FIELD_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0xFFFF0000;
   packetWord |= (uint32_t) (correctionField >> 48);
@@ -678,7 +783,7 @@ static void set_requesting_port_id(struct ptp_device *ptp,
   bufferBase = txBuffer + TX_DATA_OFFSET(ptp);
 
   /* Locate the requesting port ID in the packet */
-  wordOffset = REQ_PORT_ID_OFFSET;
+  wordOffset = ptp->packetOffset + REQ_PORT_ID_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   packetWord &= 0xFFFF0000;
   packetWord |= ((requestPortId[0] << 8) | requestPortId[1]);
@@ -955,7 +1060,7 @@ uint32_t get_message_type(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuff
   uint32_t messageType = PACKET_NOT_PTP;
 
   /* Fetch the word containing the LTF and the message type */
-  wordOffset = MESSAGE_TYPE_OFFSET;
+  wordOffset = ptp->packetOffset + MESSAGE_TYPE_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
 
   /* Check the LTF for the PTP Ethertype; if we are seriously falling behind in
@@ -979,7 +1084,7 @@ uint32_t get_transport_specific(struct ptp_device *ptp, uint32_t port, uint8_t *
   uint32_t transportSpecific = TRANSPORT_NOT_PTP;
 
   /* Fetch the word containing the LTF and the message type */
-  wordOffset = MESSAGE_TYPE_OFFSET;
+  wordOffset = ptp->packetOffset + MESSAGE_TYPE_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
 
   transportSpecific = ((packetWord >> 8) & MSG_TRANSPORT_MASK);
@@ -989,7 +1094,7 @@ uint32_t get_transport_specific(struct ptp_device *ptp, uint32_t port, uint8_t *
 
 uint16_t get_rx_announce_steps_removed(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer) {
   uint16_t stepsRemoved = 0;
-  uint32_t wordOffset = STEPS_REMOVED_OFFSET;
+  uint32_t wordOffset = ptp->packetOffset + STEPS_REMOVED_OFFSET;
   uint32_t packetWord;
   packetWord = read_packet(rxBuffer, &wordOffset);
   stepsRemoved = ((packetWord & 0xFF) << 8);
@@ -1000,7 +1105,7 @@ uint16_t get_rx_announce_steps_removed(struct ptp_device *ptp, uint32_t port, ui
 
 uint16_t get_rx_announce_path_trace(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer, PtpClockIdentity *pathTrace) {
   uint16_t pathTraceLength = 0;
-  uint32_t wordOffset = PATH_TRACE_OFFSET;
+  uint32_t wordOffset = ptp->packetOffset + PATH_TRACE_OFFSET;
   uint32_t packetWord;
   uint32_t i;
 
@@ -1038,18 +1143,18 @@ void extract_announce(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer,
 
 #if 0
   /* Exract the domain number */
-  wordOffset = DOMAIN_NUMBER_OFFSET;
+  wordOffset = ptp->packetOffset + DOMAIN_NUMBER_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
   properties->domainNumber = ((packetWord >> 8) & 0x0FF);
 
   /* Extract the current UTC offset */
-  wordOffset = UTC_OFFSET_OFFSET;
+  wordOffset = ptp->packetOffset + UTC_OFFSET_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
   properties->currentUtcOffset = (packetWord & 0x0FFFF);
 #endif
 
   /* Extract the grandmaster priorities and clock quality */
-  wordOffset = GM_PRIORITY1_OFFSET;
+  wordOffset = ptp->packetOffset + GM_PRIORITY1_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
   pv->rootSystemIdentity.priority1 = ((packetWord >> 16) & 0xFF);
   pv->rootSystemIdentity.clockClass = ((packetWord >> 8) & 0xFF);
@@ -1083,7 +1188,7 @@ void get_rx_mac_address(struct ptp_device *ptp, uint32_t port, uint8_t * rxBuffe
   uint32_t packetWord;
 
   /* Extract the source address of the packet */
-  wordOffset = SOURCE_MAC_OFFSET;
+  wordOffset = ptp->packetOffset + SOURCE_MAC_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
   macAddress[0] = ((packetWord >> 8) & 0x0FF);
   macAddress[1] = (packetWord & 0x0FF);
@@ -1105,7 +1210,7 @@ void get_source_port_id(struct ptp_device *ptp, uint32_t port, PacketDirection b
   bufferBase = (bufferDirection == TRANSMITTED_PACKET) ? packetBuffer + TX_DATA_OFFSET(ptp) : packetBuffer;
 
   /* Locate the source port ID in the packet */
-  wordOffset = SOURCE_PORT_ID_OFFSET;
+  wordOffset = ptp->packetOffset + SOURCE_PORT_ID_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   sourcePortId[0] = ((packetWord >> 8) & 0x0FF);
   sourcePortId[1] = (packetWord & 0x0FF);
@@ -1132,9 +1237,9 @@ void set_source_port_id(struct ptp_device *ptp, uint32_t port, PacketDirection b
   bufferBase = (bufferDirection == TRANSMITTED_PACKET) ? packetBuffer + TX_DATA_OFFSET(ptp) : packetBuffer;
 
   /* Update the source port id */
-  wordOffset = SOURCE_PORT_ID_OFFSET;
+  wordOffset = ptp->packetOffset + SOURCE_PORT_ID_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
-  wordOffset = SOURCE_PORT_ID_OFFSET;
+  wordOffset = ptp->packetOffset + SOURCE_PORT_ID_OFFSET;
   packetWord &= 0xFFFF0000;
   packetWord |= (sourcePortId[0] << 8);
   packetWord |= sourcePortId[1];
@@ -1162,7 +1267,7 @@ void get_rx_requesting_port_id(struct ptp_device *ptp, uint32_t port, uint8_t *r
 
   /* Extract the source address of the packet */
   bufferBase = rxBuffer;
-  wordOffset = REQ_PORT_ID_OFFSET;
+  wordOffset = ptp->packetOffset + REQ_PORT_ID_OFFSET;
   packetWord = read_packet(bufferBase, &wordOffset);
   requestingPortId[0] = ((packetWord >> 8) & 0x0FF);
   requestingPortId[1] = (packetWord & 0x0FF);

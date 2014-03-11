@@ -491,6 +491,8 @@ struct ptp_port {
   /* Per port path trace data */
   uint32_t           pathTraceLength;               
   PtpClockIdentity   pathTrace[PTP_MAX_PATH_TRACE]; 
+
+  uint8_t ipv4Address[IPV4_ADDRESS_BYTES];
 };
 
 typedef struct {
@@ -613,6 +615,10 @@ struct ptp_device {
 
   /* Number of timer ticks that have passed since the last time the tasklet ran */
   uint32_t timerTicks;
+
+  /* Generalized offset for different 1588 transports (Layer 2, IPv4, IPv6 etc) */
+  uint16_t packetOffset;
+
 };
 
 /* Enumerated type identifying a packet buffer direction; outgoing or incoming, 
@@ -662,8 +668,8 @@ void get_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection buffer
 void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t *txBuffer, PtpTime *correctionField);
 uint16_t get_gm_time_base_indicator_field(uint8_t *rxBuffer);
 void get_gm_phase_change_field(uint8_t *rxBuffer, Integer96 *lastGmPhaseChange);
-uint16_t get_gm_freq_change_field(uint8_t *rxBuffer);
-uint32_t get_cumulative_scaled_rate_offset_field(uint8_t *rxBuffer);
+uint16_t get_gm_freq_change_field(struct ptp_device *ptp, uint8_t *rxBuffer);
+uint32_t get_cumulative_scaled_rate_offset_field(struct ptp_device *ptp, uint8_t *rxBuffer);
 uint16_t get_port_number(const uint8_t *portNumber);
 void set_port_number(uint8_t *portNumber, uint16_t setValue);
 uint16_t get_steps_removed(const uint8_t *stepsRemoved);
@@ -734,7 +740,36 @@ void transmit_packet(struct ptp_device *ptp, uint32_t port, uint8_t * txBuffer);
 
 /* Bytes in a buffer word */
 #define BYTES_PER_WORD  (4)
-#define PTP_ETHERTYPE        (0x88F7u)
+#define PTP_ETHERTYPE         (0x88F7u)
+
+/* IPV4 defines */
+#define IPV4_ETHERTYPE        (0x0800u)
+#define IPV4_VERSION          (4)
+#define IPV4_IHL              (5)
+#define IPV4_DSCP_MASK        (0x3F)
+#define IPV4_DSCP_DEFAULT     (0x00)
+#define IPV4_ECN              (0)
+#define IPV4_ID               (0000)
+#define IPV4_FLAGS            (0x02)
+#define IPV4_FRAGMENT_OFFSET  (0x0000)
+#define IPV4_TTL              (0xFF)
+#define IPV4_PROTOCOL         (0x11)
+
+/* Offsets from the start of the packet (including 4 byte packet size prefix */
+#define IPV4_QUADLET4_OFFSET  (12)
+#define IPV4_QUADLET5_OFFSET  (16)
+#define IPV4_QUADLET7_OFFSET  (24)
+#define IPV4_QUADLET8_OFFSET  (28)
+#define IPV4_QUADLET9_OFFSET  (32)
+#define IPV4_QUADLET10_OFFSET (36)
+#define IPV4_HEADER_BYTES     (20)
+
+/* UDP/IPV4 defines */
+#define IPV4_UDP_HEADER_BYTES    (8)
+#define IPV4_UDP_EVENT_DST_PORT  (319)
+#define IPV4_UDP_MCAST_MSG_PORT  (320)
+#define IPV4_UDP_UCAST_MSG_PORT  (320)
+
 
 #ifndef TRUE
 #define TRUE 1

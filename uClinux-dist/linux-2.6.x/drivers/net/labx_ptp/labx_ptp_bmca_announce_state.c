@@ -541,6 +541,10 @@ void PortRoleSelection_StateMachine(struct ptp_device *ptp)
 {
   uint32_t i;
 
+  if(ptp->properties.delayMechanism == PTP_DELAY_MECHANISM_E2E) {
+    return;
+  }
+
   PortRoleSelection_State_t prevState;
   do
   {
