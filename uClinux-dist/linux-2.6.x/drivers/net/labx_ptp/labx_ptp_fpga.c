@@ -29,8 +29,6 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/netdevice.h>
-#include <xio.h>
-
 
 /* Interrupt service routine for the instance */
 static irqreturn_t labx_ptp_interrupt(int irq, void *dev_id)
@@ -410,7 +408,7 @@ static void wait_match_config(struct ptp_device *ptp, uint32_t port) {
   uint32_t statusWord;
   uint32_t timeout = 10000;
   do {
-    statusWord = XIo_In32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+    statusWord = ioread32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
     if (timeout-- == 0)
     {
       printk("ptp: wait_match_config timeout!\n");
@@ -430,18 +428,18 @@ static void select_matchers(struct ptp_device *ptp,
   switch(selectionMode) {
   case SELECT_NONE:
     /* De-select all the match units */
-    XIo_Out32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG), ID_SELECT_NONE);
+    iowrite32(ID_SELECT_NONE, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
     break;
 
   case SELECT_SINGLE:
     /* Select a single unit */
     selectionWord = ((matchUnit < 32) ? (0x01 << matchUnit) : ID_SELECT_NONE);
-    XIo_Out32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG), selectionWord);
+    iowrite32(selectionWord, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
     break;
 
   default:
     /* Select all match units at once */
-    XIo_Out32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG), ID_SELECT_ALL);
+    iowrite32(ID_SELECT_ALL, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
   }
 }
 
@@ -454,7 +452,7 @@ typedef enum { LOADING_MORE_WORDS, LOADING_LAST_WORD } LoadingMode;
 static void set_matcher_loading_mode(struct ptp_device *ptp,
                                      uint32_t port,
                                      LoadingMode loadingMode) {
-  uint32_t controlWord = XIo_In32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+  uint32_t controlWord = ioread32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
 
   if(loadingMode == LOADING_MORE_WORDS) {
     /* Clear the "last word" bit to suppress false matches while the units are
@@ -467,7 +465,7 @@ static void set_matcher_loading_mode(struct ptp_device *ptp,
      */
     controlWord |= PTP_IP_LOAD_LAST;
   }
-  XIo_Out32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG), controlWord);
+  iowrite32(controlWord, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
 }
 
 /* Clears any selected match units, preventing them from matching any packets */
@@ -488,7 +486,7 @@ static void clear_selected_matchers(struct ptp_device *ptp, uint32_t port) {
     if(wordIndex == (numClearWords - 1)) {
       set_matcher_loading_mode(ptp, port, LOADING_LAST_WORD);
     }
-    XIo_Out32(REGISTER_ADDRESS(ptp, port, PTP_IP_REG), SRLCXXE_CLEARING_WORD);
+    iowrite32(SRLCXXE_CLEARING_WORD, REGISTER_ADDRESS(ptp, port, PTP_IP_REG));
   }
 }
 
@@ -533,7 +531,7 @@ static void load_unified_matcher(struct ptp_device *ptp,
      * word to automatically re-enable the match unit(s) as the last word completes.
      */
     if(wordIndex == 0) set_matcher_loading_mode(ptp, port, LOADING_LAST_WORD);
-    XIo_Out32(REGISTER_ADDRESS(ptp, port, PTP_IP_REG), configWord);
+    iowrite32(configWord, REGISTER_ADDRESS(ptp, port, PTP_IP_REG));
     wait_match_config(ptp, port);
   }
 }
