@@ -225,6 +225,9 @@ typedef struct {
 #define PACKETIZER_TAG_INDEX_SHIFT   (PACKETIZER_TAG_BYTE_SHIFT - PACKETIZER_SAMPLE_BYTE_BITS)
 #define PACKETIZER_TAG_ACTIVE_SHIFT  (PACKETIZER_TAG_INDEX_SHIFT - 1)
 
+#define PACKETIZER_PAYLOAD_SIZE_RETAIN_PARAMS    (0x00800000)
+#define PACKETIZER_PAYLOAD_SIZE_NO_RETAIN_PARAMS (0x00000000)
+#define PACKETIZER_PAYLOAD_SIZE_ADD_VALUE_MASK   (0x0000FFFF)
 /* Returns an instruction word containing a clock domain specifier
  * @param clockDomain - Zero-based clock domain the stream descriptor belongs to
  */
@@ -355,8 +358,10 @@ typedef struct {
  * overhead bytes must already be pushed onto the parameter stack, which will be popped as 
  * a side-effect.
  */
-#define PACKETIZER_INSERT_PAYLOAD_SIZE \
-  ((uint32_t) (PACKETIZER_OPCODE_INSERT_PAYLOAD_SIZE << PACKETIZER_OPCODE_SHIFT))
+#define PACKETIZER_INSERT_PAYLOAD_SIZE(retainParams, addValue)                            \
+  ((uint32_t) ((PACKETIZER_OPCODE_INSERT_PAYLOAD_SIZE << PACKETIZER_OPCODE_SHIFT)                                  | \
+               ((retainParams) ? PACKETIZER_PAYLOAD_SIZE_RETAIN_PARAMS : PACKETIZER_PAYLOAD_SIZE_NO_RETAIN_PARAMS) | \
+               (addValue & PACKETIZER_PAYLOAD_SIZE_ADD_VALUE_MASK)))
 
 /* Returns an INSERT_BLOCK_COUNT instruction, which implicitly makes use of the present
  * data block counter for the packet's clock domain.
