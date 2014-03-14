@@ -78,6 +78,10 @@ typedef enum {
   REPLACE_PRESENT_MASTER
 } BmcaResult;
 
+
+
+#define AS_CAPABLE(ptp, pPort) (pPort->asCapable || (ptp->profile != PTP_AS_Profile))
+
 static BmcaResult bmca_comparison(PtpPriorityVector* presentMaster, PtpPriorityVector* challenger) {
 
   int32_t comparison = memcmp(presentMaster, challenger, sizeof(PtpPriorityVector));
@@ -160,8 +164,8 @@ void PortAnnounceReceive_StateMachine(struct ptp_device *ptp, uint32_t port)
 {
   struct ptp_port *pPort = &ptp->ports[port];
 
-  if (!pPort->portEnabled || !pPort->pttPortEnabled || !pPort->asCapable) {
-    BMCA_DBG_2("PAR: rejected %d %d %d (port %d)\n", pPort->portEnabled, pPort->pttPortEnabled, pPort->asCapable, port);
+  if (!pPort->portEnabled || !pPort->pttPortEnabled || !AS_CAPABLE(ptp,pPort)) {
+    BMCA_DBG_2("PAR: rejected %d %d %d (port %d)\n", pPort->portEnabled, pPort->pttPortEnabled, AS_CAPABLE(ptp, pPort), port);
     pPort->rcvdMsg = FALSE;
   } else {
     pPort->rcvdMsg = qualifyAnnounce(ptp, port);
@@ -265,7 +269,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
   {
     prevState = pPort->portAnnounceInformation_State;
 
-    if (!pPort->portEnabled || !pPort->pttPortEnabled || !pPort->asCapable)
+    if (!pPort->portEnabled || !pPort->pttPortEnabled || !AS_CAPABLE(ptp, pPort)) 
     {
       if (pPort->portAnnounceInformation_State != PortAnnounceInformation_DISABLED)
       {
@@ -283,7 +287,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
           break;
 
         case PortAnnounceInformation_DISABLED:
-          if (pPort->portEnabled && pPort->pttPortEnabled && pPort->asCapable) {
+          if (pPort->portEnabled && pPort->pttPortEnabled && AS_CAPABLE(ptp, pPort)) {
             PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_AGED);
           } else if (ptp->ports[port].rcvdMsg) {
             PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_DISABLED);
@@ -541,9 +545,12 @@ void PortRoleSelection_StateMachine(struct ptp_device *ptp)
 {
   uint32_t i;
 
+#if 0
+  // TODO: Turn off for now, this got packets flowing
   if(ptp->properties.delayMechanism == PTP_DELAY_MECHANISM_E2E) {
     return;
   }
+#endif
 
   PortRoleSelection_State_t prevState;
   do

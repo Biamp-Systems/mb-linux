@@ -26,8 +26,8 @@
 
 #include "labx_ptp.h"
 
-static uint8_t ipv4PrimaryMCastAddress[] = { 244, 0, 1, 129};
-static uint8_t ipv4PDelayMCastAddress[]  = { 244, 0, 1, 107};
+const uint8_t ipv4PrimaryMCastAddress[] = { 244, 0, 1, 129};
+const uint8_t ipv4PDelayMCastAddress[]  = { 244, 0, 1, 107};
 
 uint16_t in_cksum(uint8_t * bufferBase, uint32_t *wordOffset) {
     uint32_t  sum = 0;
@@ -61,7 +61,7 @@ uint16_t in_cksum(uint8_t * bufferBase, uint32_t *wordOffset) {
 static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBuffer,
                             uint32_t *wordOffset, uint32_t messageType,
                             uint32_t messageLength, uint16_t headerFlags,
-                            uint8_t *dstIpAddress, uint16_t dstPort) {
+                            const uint8_t *dstIpAddress, uint16_t dstPort) {
   uint32_t packetWord;
   uint16_t ckSum=0;
   uint16_t saveOffset=0;

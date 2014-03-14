@@ -97,9 +97,27 @@
 #define PTP_LOCAL_SECONDS_LOW_REG   (0x00A)
 #define PTP_LOCAL_NANOSECONDS_REG   (0x00B)
 
+#define PTP_IP_CONFIG_REG (0x00C)
+#  define PTP_IP_LOAD_ACTIVE (0x80000000)
+#  define PTP_IP_LOAD_LAST   (0x40000000)
+#  define ID_SELECT_NONE  0x00000000
+#  define ID_SELECT_ALL   0x3FFFFFFF
+#define PTP_IP_REG (0x00D)
+
+#define NUM_SRLC16E_INSTANCES      16
+#  define NUM_SRLC16E_CONFIG_WORDS   (NUM_SRLC16E_INSTANCES / 2)
+#define SRLCXXE_CLEARING_WORD     0x00000000
+
+#  define PTP_MATCHER_DISABLE  0x00000000
+#  define PTP_MATCHER_ENABLE   0x00000001
+
+#define PTP_CAPS_REG  0x00E
+#  define PTP_PORT_WIDTH_MASK 0x0F
+#  define PTP_NUM_MATCH_UNITS_MASK  0xF0
+
 #define PTP_REVISION_REG   (0x0FF)
 #  define REVISION_FIELD_BITS  4
-#  define REVISION_FIELD_MASK  (0x0F)
+#  define REVISION_FIELD_MASK  0x0F
 
 #define REGISTER_ADDRESS(device, port, offset) \
   ((uintptr_t)device->virtualAddress | (port << PORT_RANGE_SHIFT) |      \
@@ -619,7 +637,19 @@ struct ptp_device {
   /* Generalized offset for different 1588 transports (Layer 2, IPv4, IPv6 etc) */
   uint16_t packetOffset;
 
+  /* 1588 Profile being used */
+  PtpProfile profile;
+
+  uint32_t numIPFilters;
+
 };
+
+typedef struct {
+  uint32_t matchUnit;
+  uint32_t configAction;
+  uint64_t matchIdMask;
+  uint64_t matchId;
+} PtpMatcherConfig;
 
 /* Enumerated type identifying a packet buffer direction; outgoing or incoming, 
  * respectively.
@@ -736,7 +766,12 @@ uint8_t * get_output_buffer(struct ptp_device *ptp,uint32_t port,uint32_t bufTyp
 void write_packet(uint8_t *bufferBase, uint32_t *wordOffset, uint32_t writeWord);
 uint32_t read_packet(uint8_t * bufferBase, uint32_t *wordOffset);
 void transmit_packet(struct ptp_device *ptp, uint32_t port, uint8_t * txBuffer);
+void ptp_set_ip_filter(struct ptp_device *ptp, uint32_t port, const uint8_t *ipAddr, uint16_t destPort, uint32_t matchUnit);
+void ptp_clear_all_matchers(struct ptp_device *ptp, uint32_t port);
+uint32_t ptp_get_num_ip_filters(struct ptp_device *ptp);
 
+extern const uint8_t ipv4PrimaryMCastAddress[];
+extern const uint8_t ipv4PDelayMCastAddress[];
 
 /* Bytes in a buffer word */
 #define BYTES_PER_WORD  (4)

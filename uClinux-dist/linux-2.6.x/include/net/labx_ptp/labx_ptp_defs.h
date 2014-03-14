@@ -71,6 +71,11 @@ typedef enum {
   PTP_IPv4,
 } PtpPacketType;
 
+typedef enum {
+  PTP_AS_Profile,
+  PTP_Default_Profile
+} PtpProfile;
+
 /* I/O control commands and structures for the PTP driver */
 #define IOC_PTP_STOP_SERVICE    _IO('p', 0x10)
 #define IOC_PTP_START_SERVICE   _IO('p', 0x11)
@@ -133,7 +138,9 @@ typedef struct {
   uint32_t         unlockTimeMsec;
   PtpPacketType    packetType;
   uint8_t          dscp;
+  PtpProfile       profile;
 } PtpProperties;
+
 #define IOC_PTP_GET_PROPERTIES  _IOR('p', 0x12, PtpProperties)
 #define IOC_PTP_SET_PROPERTIES  _IOW('p', 0x13, PtpProperties)
 

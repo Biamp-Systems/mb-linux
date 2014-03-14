@@ -264,6 +264,7 @@ static void SetFromDataSet(struct ptp_device *ptp, uint32_t port, PtpAsPortDataS
   }
 }
 
+
 /* I/O control operations for the driver */
 static int ptp_device_ioctl(struct inode *inode, struct file *filp,
                             unsigned int command, unsigned long arg)
@@ -324,6 +325,18 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
       if (ptp->properties.packetType == PTP_IPv4) {
         /* Buffer Length (4) + UPD(8) + IP(20) byte offset*/
         ptp->packetOffset = 8+20;
+
+        if (ptp->numIPFilters != 0) {
+          /* Setup IPV4 Filters */
+          for (i = 0;i<ptp->numPorts;++i) {
+            ptp_set_ip_filter(ptp,i,ipv4PrimaryMCastAddress,IPV4_UDP_MCAST_MSG_PORT,0);
+            ptp_set_ip_filter(ptp,i,ipv4PrimaryMCastAddress,IPV4_UDP_EVENT_DST_PORT,1);
+            ptp_set_ip_filter(ptp,i,ptp->ports[i].ipv4Address,IPV4_UDP_UCAST_MSG_PORT,2);
+            ptp_set_ip_filter(ptp,i,ptp->ports[i].ipv4Address,IPV4_UDP_EVENT_DST_PORT,3);
+            ptp_set_ip_filter(ptp,i,ipv4PDelayMCastAddress,IPV4_UDP_MCAST_MSG_PORT,4);
+            ptp_set_ip_filter(ptp,i,ipv4PDelayMCastAddress,IPV4_UDP_EVENT_DST_PORT,5);
+          }
+        }
       }
 
       /* Convert the millisecond values for RTC lock settings into timer ticks.
@@ -381,9 +394,13 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
       uint32_t copyResult;
       PtpPortProperties properties = {};
 
+
+
       /* Copy the userspace argument into the device */
       copyResult = copy_from_user(&properties, (void __user*)arg, sizeof(PtpPortProperties));
       if(copyResult != 0) return(-EFAULT);
+
+      printk("Setting PTP Properties IP Address: %d:%d:%d:%d\n",properties.ipv4Address[0],properties.ipv4Address[1],properties.ipv4Address[2],properties.ipv4Address[3]);
 
       /* Verify that it is a valid port number */
       if(properties.portNumber >= ptp->numPorts) return (-EINVAL);
@@ -681,15 +698,18 @@ static int ptp_probe(const char *name,
     ptp->portWidth = 8;
   }
 
+  ptp->numIPFilters = ptp_get_num_ip_filters(ptp);
+
   /* Announce the device */
-  printk(KERN_INFO "%s: Found Lab X PTP hardware %d.%d at 0x%08X, IRQ %d, Ports %d, Width %d bits\n", 
+  printk(KERN_INFO "%s: Found Lab X PTP hardware %d.%d at 0x%08X, IRQ %d, Ports %d, Width %d bits, numIPFilters %d\n", 
          ptp->name,
          versionMajor,
          versionMinor,
          (uint32_t)ptp->physicalAddress,
          ptp->irq,
          ptp->numPorts,
-         ptp->portWidth);
+         ptp->portWidth, 
+         ptp->numIPFilters);
 
   /* Initialize other resources */
   spin_lock_init(&ptp->mutex);
@@ -816,6 +836,12 @@ static int ptp_probe(const char *name,
     }
   }
 #endif
+
+  /* Clear Match Filters */
+  /* TODO: Only do this is we have match units */
+  for(i=0; i<ptp->numPorts; i++) {
+    ptp_clear_all_matchers(ptp,i);
+  }
 
   /* Register for network device events */
   ptp->notifier.notifier_call = ptp_device_event;
