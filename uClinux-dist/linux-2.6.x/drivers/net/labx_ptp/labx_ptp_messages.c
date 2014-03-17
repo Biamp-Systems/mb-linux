@@ -64,8 +64,8 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
                             const uint8_t *dstIpAddress, uint16_t dstPort) {
   uint32_t packetWord;
   uint16_t ckSum=0;
-  uint16_t saveOffset=0;
   uint32_t savePacketWord=0;
+
   PtpPortProperties *portProperties = &ptp->ports[port].portProperties;
 
   /* Locate the requested buffer and begin with the packet's transmit length
@@ -819,7 +819,6 @@ void print_packet_buffer(struct ptp_device *ptp,
 
 /* Transmits the next ANNOUNCE message in a sequence */
 void transmit_announce(struct ptp_device *ptp, uint32_t port) {
-  PtpTime presentTime;
   uint8_t *txBuffer;
 
   /* Update with the current GM info and path vector */
@@ -971,7 +970,6 @@ void transmit_delay_response(struct ptp_device *ptp, uint32_t port, uint8_t * re
 
 /* Transmits the next PDELAY_REQ message in a sequence */
 void transmit_pdelay_request(struct ptp_device *ptp, uint32_t port) {
-  PtpTime presentTime;
   uint8_t *txBuffer;
 
   txBuffer = get_output_buffer(ptp,port,PTP_TX_PDELAY_REQ_BUFFER);

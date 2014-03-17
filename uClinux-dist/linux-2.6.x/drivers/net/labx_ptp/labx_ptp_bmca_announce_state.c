@@ -80,7 +80,7 @@ typedef enum {
 
 
 
-#define AS_CAPABLE(ptp, pPort) (pPort->asCapable || (ptp->profile != PTP_AS_Profile))
+#define AS_CAPABLE(ptp, pPort) (pPort->asCapable || (ptp->properties.profile != PTP_AS_Profile))
 
 static BmcaResult bmca_comparison(PtpPriorityVector* presentMaster, PtpPriorityVector* challenger) {
 

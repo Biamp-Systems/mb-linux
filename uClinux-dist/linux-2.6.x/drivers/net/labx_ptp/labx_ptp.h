@@ -637,9 +637,7 @@ struct ptp_device {
   /* Generalized offset for different 1588 transports (Layer 2, IPv4, IPv6 etc) */
   uint16_t packetOffset;
 
-  /* 1588 Profile being used */
-  PtpProfile profile;
-
+  /* Number of IP filters in use */
   uint32_t numIPFilters;
 
 };
