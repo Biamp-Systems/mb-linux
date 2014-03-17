@@ -2,8 +2,6 @@
 # Makefile for the Lab X Technologies PTP device driver
 #
 
-EXTRA_CFLAGS += -I$(TOPDIR)/drivers/xilinx_common
-
 # Define a multi-part driver
 obj-$(CONFIG_LABX_PTP) += labx_ptp.o
 
