@@ -376,12 +376,12 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
     ptp->ports[port].cumulativeScaledRateOffset = get_cumulative_scaled_rate_offset_field(ptp,rxBuffer);
 
     /* Treat GM phase change just like a GM change */
-    if (get_gm_time_base_indicator_field(rxBuffer) != ptp->lastGmTimeBaseIndicator) {
+    if (get_gm_time_base_indicator_field(ptp,rxBuffer) != ptp->lastGmTimeBaseIndicator) {
       printk("GM Phase Change\n");
       labx_ptp_signal_gm_change(ptp);
 
-      ptp->lastGmTimeBaseIndicator = get_gm_time_base_indicator_field(rxBuffer);
-      get_gm_phase_change_field(rxBuffer, &ptp->lastGmPhaseChange);
+      ptp->lastGmTimeBaseIndicator = get_gm_time_base_indicator_field(ptp,rxBuffer);
+      get_gm_phase_change_field(ptp,rxBuffer, &ptp->lastGmPhaseChange);
       ptp->lastGmFreqChange = get_gm_freq_change_field(ptp,rxBuffer);
     }
 
@@ -588,6 +588,13 @@ void labx_ptp_rx_state_task(unsigned long data) {
 
 void process_rx_buffer(struct ptp_device *ptp, int port, uint8_t *buffer)
 {
+  uint16_t etherType = get_ethertype(ptp,port,buffer);
+  if ((ptp->properties.packetType == PTP_IPv4 && etherType != IPV4_ETHERTYPE) || 
+     (ptp->properties.packetType == PTP_Layer2 && etherType != PTP_ETHERTYPE)) {
+    /* Discard non IP packets when in PTP_IPv4 Mode */
+    return;
+  }
+
   if(TRANSPORT_PTP == get_transport_specific(ptp, port, buffer)) {
        /* Determine which message to process */
       switch(get_message_type(ptp, port, buffer)) {
@@ -627,9 +634,12 @@ void process_rx_buffer(struct ptp_device *ptp, int port, uint8_t *buffer)
         break;
 
       default:
+        printk("Unknown PTP Message: %d\n",get_message_type(ptp,port,buffer));
         break;
       } /* switch(messageType) */
-  } else printk("WARNING: Unrecognized transportSpecific rejected\n");
+  } else  {
+    printk("WARNING: Unrecognized transportSpecific rejected:\n"); 
+  }
 }
 
 /* Tasklet function for PTP Tx packets */

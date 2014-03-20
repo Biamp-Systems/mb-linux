@@ -575,8 +575,8 @@ void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t * rxBuf
 }
 
 /* Get the gmTimeBaseIndicator from the follow-up TLV */
-uint16_t get_gm_time_base_indicator_field(uint8_t *rxBuffer) {
-  uint32_t wordOffset = GM_TIME_BASE_INDICATOR_OFFSET;
+uint16_t get_gm_time_base_indicator_field(struct ptp_device *ptp, uint8_t *rxBuffer) {
+  uint32_t wordOffset =  ptp->packetOffset + GM_TIME_BASE_INDICATOR_OFFSET;
   return read_packet(rxBuffer, &wordOffset) >> 16;
 }
 
@@ -598,9 +598,12 @@ static void set_gm_time_base_indicator(struct ptp_device *ptp, uint8_t * txBuffe
 }
 
 /* Get the lastGmPhaseChange from the follow-up TLV */
-void get_gm_phase_change_field(uint8_t *rxBuffer, Integer96 *lastGmPhaseChange) {
+/* NOTE: Adding PTP device to params (for now) to get AS phase change logic working. Once 
+ * we et E2E working with our own AS over layer 3, we may remove this when using IPV4
+ * since 1588 doesn't have the concept of GM phase change */
+void get_gm_phase_change_field(struct ptp_device *ptp, uint8_t *rxBuffer, Integer96 *lastGmPhaseChange) {
   uint32_t packetWord;
-  uint32_t wordOffset = GM_PHASE_CHANGE_OFFSET;
+  uint32_t wordOffset = ptp->packetOffset + GM_PHASE_CHANGE_OFFSET;
 
   lastGmPhaseChange->upper = ((read_packet(rxBuffer, &wordOffset) & 0x0000FFFF) << 16);
   packetWord = read_packet(rxBuffer, &wordOffset);
@@ -1061,22 +1064,14 @@ uint32_t get_message_type(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuff
   wordOffset = ptp->packetOffset + MESSAGE_TYPE_OFFSET;
   packetWord = read_packet(rxBuffer, &wordOffset);
 
-  /* Check the LTF for the PTP Ethertype; if we are seriously falling behind in
-   * responding to received packets, it's possible we could be reading from the
-   * present write buffer; which most likely is processing a non-PTP packet.
-   */
-  if(((packetWord >> 16) & LTF_MASK) == PTP_ETHERTYPE) {
-    /* Good PTP packet, return its message type */
-    messageType = ((packetWord >> 8) & MSG_TYPE_MASK);
-  }
-
+  messageType = ((packetWord >> 8) & MSG_TYPE_MASK);
   return(messageType);
 }
 
 /* Returns the type of PTP message contained within the passed receive buffer, or
  * PACKET_NOT_PTP if the buffer does not contain a valid PTP datagram.
  */
-uint32_t get_transport_specific(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer) {
+  uint32_t get_transport_specific(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer) {
   uint32_t wordOffset;
   uint32_t packetWord;
   uint32_t transportSpecific = TRANSPORT_NOT_PTP;
@@ -1365,4 +1360,14 @@ int32_t compare_port_ids(const uint8_t *portIdA, const uint8_t *portIdB) {
     }
   }
   return(comparisonResult);
+}
+
+uint16_t get_ethertype(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer) {
+  uint32_t wordOffset;
+  uint32_t packetWord;
+
+  wordOffset = ETHERTYPE_OFFSET;
+  packetWord = read_packet(rxBuffer, &wordOffset);
+  packetWord = packetWord >> 16;
+  return packetWord;
 }

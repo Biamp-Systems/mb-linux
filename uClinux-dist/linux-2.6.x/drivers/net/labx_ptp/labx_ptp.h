@@ -694,8 +694,8 @@ void get_local_hardware_timestamp(struct ptp_device *ptp, uint32_t port, PacketD
 void get_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
                    uint8_t * packetBuffer, PtpTime *timestamp);
 void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t *txBuffer, PtpTime *correctionField);
-uint16_t get_gm_time_base_indicator_field(uint8_t *rxBuffer);
-void get_gm_phase_change_field(uint8_t *rxBuffer, Integer96 *lastGmPhaseChange);
+uint16_t get_gm_time_base_indicator_field(struct ptp_device *ptp, uint8_t *rxBuffer);
+void get_gm_phase_change_field(struct ptp_device *ptp, uint8_t *rxBuffer, Integer96 *lastGmPhaseChange);
 uint16_t get_gm_freq_change_field(struct ptp_device *ptp, uint8_t *rxBuffer);
 uint32_t get_cumulative_scaled_rate_offset_field(struct ptp_device *ptp, uint8_t *rxBuffer);
 uint16_t get_port_number(const uint8_t *portNumber);
@@ -767,13 +767,15 @@ void transmit_packet(struct ptp_device *ptp, uint32_t port, uint8_t * txBuffer);
 void ptp_set_ip_filter(struct ptp_device *ptp, uint32_t port, const uint8_t *ipAddr, uint16_t destPort, uint32_t matchUnit);
 void ptp_clear_all_matchers(struct ptp_device *ptp, uint32_t port);
 uint32_t ptp_get_num_ip_filters(struct ptp_device *ptp);
+uint16_t get_ethertype(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer);
 
 extern const uint8_t ipv4PrimaryMCastAddress[];
 extern const uint8_t ipv4PDelayMCastAddress[];
 
 /* Bytes in a buffer word */
-#define BYTES_PER_WORD  (4)
+#define BYTES_PER_WORD        (4)
 #define PTP_ETHERTYPE         (0x88F7u)
+#define ETHERTYPE_OFFSET      (12)
 
 /* IPV4 defines */
 #define IPV4_ETHERTYPE        (0x0800u)
