@@ -239,6 +239,12 @@ config LABX_MAILBOX
         help
           Select this to enable support for host-to-supervisory communication.
 
+config SPARROW_DSP
+        tristate "Biamp Sparrow DSP device"
+        depends on OF && (PPC_OF || MICROBLAZE)
+        help
+          Select this to enable support for host-to-supervisory communication to the Sparrow DSP module.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 endif # MISC_DEVICES

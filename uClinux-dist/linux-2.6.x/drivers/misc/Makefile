@@ -21,4 +21,5 @@ obj-$(CONFIG_HP_ILO)		+= hpilo.o
 obj-$(CONFIG_ISL29003)		+= isl29003.o
 obj-$(CONFIG_C2PORT)		+= c2port/
 obj-$(CONFIG_LABX_MAILBOX)      += labx/
+obj-$(CONFIG_SPARROW_DSP)       += biamp/ 
 obj-y				+= eeprom/
