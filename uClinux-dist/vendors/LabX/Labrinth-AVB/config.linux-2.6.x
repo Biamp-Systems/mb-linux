@@ -404,7 +404,17 @@ CONFIG_BLK_DEV_XIP=y
 # CONFIG_CDROM_PKTCDVD is not set
 # CONFIG_ATA_OVER_ETH is not set
 # CONFIG_XILINX_SYSACE is not set
-# CONFIG_MISC_DEVICES is not set
+CONFIG_MISC_DEVICES=y
+# CONFIG_ENCLOSURE_SERVICES is not set
+# CONFIG_LABX_MAILBOX is not set
+CONFIG_SPARROW_DSP=y
+# CONFIG_C2PORT is not set
+
+#
+# EEPROM support
+#
+# CONFIG_EEPROM_AT25 is not set
+# CONFIG_EEPROM_93CX6 is not set
 
 #
 # SCSI device support
