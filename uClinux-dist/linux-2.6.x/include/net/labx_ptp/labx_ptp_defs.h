@@ -67,13 +67,13 @@ typedef enum {
 
 /* Packet Type */
 typedef enum {
-  PTP_Layer2,
-  PTP_IPv4,
+  PTP_Layer2=0,
+  PTP_IPv4=1,
 } PtpPacketType;
 
 typedef enum {
-  PTP_AS_Profile,
-  PTP_Default_Profile
+  PTP_AS_Profile=0,
+  PTP_Default_Profile=1
 } PtpProfile;
 
 /* I/O control commands and structures for the PTP driver */

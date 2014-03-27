@@ -814,10 +814,13 @@ void print_packet_buffer(struct ptp_device *ptp,
    */
   bufferBase = (bufferDirection == TRANSMITTED_PACKET) ? packetBuffer + TX_DATA_OFFSET(ptp):packetBuffer;
 
+  printk("\n");
   wordOffset = 0;
   for(wordIndex = 0; wordIndex < packetWords; wordIndex++) {
-    printk("0x%08X\n", read_packet(bufferBase, &wordOffset));
+    printk("0x%08X ", read_packet(bufferBase, &wordOffset));
+    if ((wordIndex & 7) == 7) printk("\n");
   }
+  printk("\n");
 }
 
 /* Transmits the next ANNOUNCE message in a sequence */
