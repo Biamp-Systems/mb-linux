@@ -801,7 +801,6 @@ static void set_requesting_port_id(struct ptp_device *ptp,
 }
 
 void print_packet_buffer(struct ptp_device *ptp,
-                         uint32_t port,
                          PacketDirection bufferDirection,
                          uint8_t *packetBuffer,
                          uint32_t packetWords) {

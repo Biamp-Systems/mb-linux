@@ -28,6 +28,15 @@
 
 /* Define this to get some extra debug on path delay messages */
 /* #define PATH_DELAY_DEBUG */
+#ifdef PATH_DELAY_DEBUG
+unsigned char *pdelay_state_strings[] = { "NOT_ENABLED", 
+                                        "INITIAL_SEND_PDELAY_REQ",
+                                        "RESET", 
+                                        "SEND_PDELAY_REQ",
+                                        "WAITING_FOR_PDELAY_RESP",
+                                        "WAITING_FOR_PDELAY_RESP_FOLLOW_UP",
+                                        "WAITING_FOR_PDELAY_INTERVAL_TIMER" };
+#endif
 
 static void computePdelayRateRatio(struct ptp_device *ptp, uint32_t port)
 {
@@ -125,7 +134,7 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
   uint8_t rxSourcePortId[PORT_ID_BYTES];
 
 #ifdef PATH_DELAY_DEBUG
-  printk("MDPdelayReq: Set State %d (port index %d)\n", newState, port);
+  printk("MDPdelayReq: Set State %s (port index %d)\n", pdelay_state_strings[newState], port);
 #endif
 
   ptp->ports[port].mdPdelayReq_State = newState;
@@ -380,7 +389,7 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
           {
 #ifdef PATH_DELAY_DEBUG
             int i;
-            printk("Resetting %d: intervalTimer %d, reqInterval %d, rcvdPdelayResp %d, rcvdPdelayRespPtr %d, rxSequence %d, txSequence %d\n",
+            printk("Resetting %d: intervalTimer %d, reqInterval %d, rcvdPdelayResp %d, rcvdPdelayRespPtr %p, rxSequence %d, txSequence %d\n",
               port, ptp->ports[port].pdelayIntervalTimer, PDELAY_REQ_INTERVAL_TICKS(ptp, port), ptp->ports[port].rcvdPdelayResp,
               ptp->ports[port].rcvdPdelayRespPtr, rxSequenceId, txSequenceId);
             printk("rxRequestingPortID:");
