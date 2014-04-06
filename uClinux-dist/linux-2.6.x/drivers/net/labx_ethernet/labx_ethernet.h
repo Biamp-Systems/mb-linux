@@ -267,6 +267,7 @@ extern "C" {
 #include "xstatus.h"
 #include "labx_ethernet_hw.h"
 #include "net/labx_ethernet/labx_ethernet_defs.h"
+#include "net/labx_ethernet/labx_ethernet_userspace_defs.h"
 #include <linux/interrupt.h>
 
 /************************** Constant Definitions *****************************/
@@ -391,6 +392,8 @@ extern "C" {
 #define XTE_PHY_TYPE_SGMII       4
 #define XTE_PHY_TYPE_1000BASE_X  5
 
+#define MAC_ADDRESS_BYTES        6
+
 /**************************** Type Definitions *******************************/
 
 
@@ -449,6 +452,8 @@ typedef struct XLlTemac {
   u32 versionReg;            /* Version register */
   u32 MacMatchUnits;         /* Number of supported MAC filters */
   struct net_device *dev;    /* Pointer back to the net device */
+	u32 mc_excl_count;         /* Number of IGMP multivast addresses excluded from filter */
+  struct labx_eth_addr_range igmp_excl_range; /* multicast addresses to not setup FPGA filters for */
 } XLlTemac;
 
 
@@ -733,6 +738,8 @@ void labx_eth_PhyWrite(XLlTemac *InstancePtr, u32 PhyAddress, u32 RegisterNum,
 		       u16 PhyData);
 
 void labx_eth_UpdateMacFilters(XLlTemac *InstancePtr);
+
+u32 labx_eth_mcast_count_addr_included(struct net_device *dev, u32 mc_excl_count);
 
 extern int labx_eth_mdio_bus_init(struct device *dev, struct labx_eth_platform_data *pdata, XLlTemac *InstancePtr);
 #ifdef __cplusplus
