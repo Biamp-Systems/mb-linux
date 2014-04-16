@@ -135,24 +135,25 @@ endif
 ifdef CONFIG_SPI_SPIDEV
 DEVICES +=	\
 	spidev0,c,153,0
+DEVICES +=	\
+	spidev1,c,152,0
+DEVICES +=	\
+	spidev2,c,151,0
+DEVICES +=	\
+	spidev3,c,150,0
 endif
 
 # Add the AVB packet engine device nodes
 DEVICES += packetizer0,c,250,0
 DEVICES += depacketizer0,c,252,0
-DEVICES += depacketizer1,c,252,1
-DEVICES += redswitch0,c,248,0
 DEVICES += ptp0,c,253,0
-
-# Add the Labrinth SPI mailbox peripheral device node
-DEVICES += mailbox0,c,255,0
-
-# Add the Labrinth legacy packet bridge device node
-DEVICES += legacy_bridge0,c,222,0
 
 # Add the Xilinx SPI Master peripheral device node
 ifdef CONFIG_XILINX_SPI
 DEVICES += spidev0,c,153,0
+DEVICES += spidev1,c,152,0
+DEVICES += spidev2,c,151,0
+DEVICES += spidev3,c,150,0
 endif
 
 I2C_MAJOR = 89

@@ -35,3 +35,14 @@ if [ -f $P17721DFILE ] ; then
   $P17221DFILE 127.0.0.1 8080 &
 fi
 
+# Look for Expander_mb in jffs file system first, then fall back to romfs
+EXPANDERDFILE=/mnt/config/expanderd
+if [ ! -f $EXPANDERDFILE ] ; then
+  echo "Using expanderd application from ROMfs"
+  EXPANDERDFILE=/mnt/apps/expanderd
+fi
+
+if [ -f $EXPANDERDFILE ] ; then
+  echo "Launching Expander daemon..."
+  $EXPANDERDFILE &
+fi
