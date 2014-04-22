@@ -744,6 +744,8 @@ static int ptp_probe(const char *name,
 
     ptp->ports[i].portProperties.stepsRemoved = 0;
   }
+  static uint32_t domainIndex = 0;
+  ptp->properties.domainIndex          = domainIndex++;
   ptp->properties.domainNumber         = DEFAULT_DOMAIN_NUM;
   ptp->properties.currentUtcOffset     = DEFAULT_UTC_OFFSET;
   ptp->properties.grandmasterPriority1 = DEFAULT_GRANDMASTER_PRIORITY1;

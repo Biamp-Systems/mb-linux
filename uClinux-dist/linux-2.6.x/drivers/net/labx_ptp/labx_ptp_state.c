@@ -125,9 +125,12 @@ void labx_ptp_timer_state_task(unsigned long data) {
 #ifdef DEBUG_INCREMENT
       /* Periodically print out the increment we're using */
       if(++ptp->slaveDebugCounter >= timeoutTicks) {
+        RtcIncrement increment;
         ptp->slaveDebugCounter = 0;
 
-        printk("PTP increment: 0x%08X\n",ptp_get_increment());
+        get_rtc_increment(ptp, &increment);
+
+        printk("%s: PTP increment: 0x%08X\n", ptp->name, (increment.mantissa << RTC_MANTISSA_SHIFT) | increment.fraction);
       }
 #endif
 
@@ -135,7 +138,7 @@ void labx_ptp_timer_state_task(unsigned long data) {
        * port to the master state.
        */
       if(ptp->ports[i].selectedRole == PTP_MASTER) {
-        printk("PTP master (port %d)\n", i);
+        printk("%s: PTP master (port %d)\n", ptp->name, i);
         for (i=0; i<ptp->numPorts; i++) {
           ptp->ports[i].announceCounter    = 0;
           ptp->ports[i].announceSequenceId = 0x0000;
@@ -377,7 +380,7 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
 
     /* Treat GM phase change just like a GM change */
     if (get_gm_time_base_indicator_field(ptp,rxBuffer) != ptp->lastGmTimeBaseIndicator) {
-      printk("GM Phase Change\n");
+      printk("%s: GM Phase Change\n", ptp->name);
       labx_ptp_signal_gm_change(ptp);
 
       ptp->lastGmTimeBaseIndicator = get_gm_time_base_indicator_field(ptp,rxBuffer);
@@ -397,7 +400,7 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
 
       /* Treat clock changes just like a GM change when we think we are locked */
       if (ptp->rtcLockState == PTP_RTC_LOCKED) {
-        printk("RTC Change while locked\n");
+        printk("%s: RTC Change while locked %04X%08X.%08X\n", ptp->name, absDifference.secondsUpper, absDifference.secondsLower, absDifference.nanoseconds);
         labx_ptp_signal_gm_change(ptp);
       }
 
@@ -408,7 +411,7 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
        * a Grandmaster change yet.
        */
       if(ptp->rtcChangesAllowed) {
-        printk("Resetting RTC!\n");
+        printk("%s: Resetting RTC!\n", ptp->name);
         set_rtc_increment(ptp, &ptp->nominalIncrement);
         set_rtc_time_adjusted(ptp, &correctedTimestamp, &ptp->ports[port].syncRxTimestampTemp);
         ptp->rtcReset = FALSE;
@@ -416,12 +419,12 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
     } else {
       /* Less than a second, leave these timestamps and update the servo */
 #ifdef SYNC_DEBUG
-      printk("Sync Rx: %08X%08X.%08X\n", ptp->ports[port].syncRxTimestampTemp.secondsUpper,
+      printk("%s: Sync Rx: %08X%08X.%08X\n", ptp->name, ptp->ports[port].syncRxTimestampTemp.secondsUpper,
         ptp->ports[port].syncRxTimestampTemp.secondsLower, ptp->ports[port].syncRxTimestampTemp.nanoseconds);
-      printk("Sync Tx: %08X%08X.%08X (corrected: %08X%08X.%08X\n", syncTxTimestamp.secondsUpper,
+      printk("%s: Sync Tx: %08X%08X.%08X (corrected: %08X%08X.%08X\n", ptp->name, syncTxTimestamp.secondsUpper,
         syncTxTimestamp.secondsLower, syncTxTimestamp.nanoseconds, correctedTimestamp.secondsUpper,
         correctedTimestamp.secondsLower, correctedTimestamp.nanoseconds);
-      printk("Correction: %08X%08X.%08X\n", correctionField.secondsUpper,
+      printk("%s: Correction: %08X%08X.%08X\n", ptp->name, correctionField.secondsUpper,
         correctionField.secondsLower, correctionField.nanoseconds);
 #endif
       preempt_disable();
@@ -634,11 +637,11 @@ void process_rx_buffer(struct ptp_device *ptp, int port, uint8_t *buffer)
         break;
 
       default:
-        printk("Unknown PTP Message: %d\n",get_message_type(ptp,port,buffer));
+        printk("%s: Unknown PTP Message: %d\n", ptp->name, get_message_type(ptp,port,buffer));
         break;
       } /* switch(messageType) */
   } else  {
-    printk("WARNING: Unrecognized transportSpecific rejected:\n"); 
+    printk("%s: WARNING: Unrecognized transportSpecific rejected:\n", ptp->name);
   }
 }
 
@@ -752,7 +755,7 @@ void labx_ptp_tx_state_task(unsigned long data) {
 void ack_grandmaster_change(struct ptp_device *ptp) {
   unsigned long flags;
 
-  printk("GM ACK\n");
+  printk("%s: GM ACK\n", ptp->name);
   /* Re-enable the changing of RTC parameters */
   preempt_disable();
   spin_lock_irqsave(&ptp->mutex, flags);
@@ -865,7 +868,7 @@ void init_state_machines(struct ptp_device *ptp) {
   ptp->rtcLastOffset         = 0;
   ptp->rtcLastIncrementDelta = 0;
 
-  printk("PTP master\n");
+  printk("%s: PTP master\n", ptp->name);
 
 #ifndef CONFIG_LABX_PTP_NO_TASKLET
   /* Initialize the Tx state tasklet */

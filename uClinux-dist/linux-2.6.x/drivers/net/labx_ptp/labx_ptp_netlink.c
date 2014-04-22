@@ -86,7 +86,7 @@ void ptp_work_send_heartbeat(struct work_struct *work) {
   }
 
   /* Write the PTP domain identifier to the message */
-  returnValue = nla_put_u8(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainNumber);
+  returnValue = nla_put_u32(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainIndex);
   if(returnValue != 0) goto heartbeat_fail;
 
   /* Finalize the message and multicast it */
@@ -153,7 +153,7 @@ void ptp_work_send_gm_change(struct work_struct *work) {
   }
 
   /* Write the PTP domain identifier to the message */
-  returnValue = nla_put_u8(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainNumber);
+  returnValue = nla_put_u32(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainIndex);
   if(returnValue != 0) goto gm_change_fail;
 
   /* Put a single entry into a key / value map to communicate the new Grandmaster */
@@ -247,7 +247,7 @@ void ptp_work_send_rtc_change(struct work_struct *work) {
   }
 
   /* Write the PTP domain identifier to the message */
-  returnValue = nla_put_u8(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainNumber);
+  returnValue = nla_put_u32(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainIndex);
   if(returnValue != 0) goto rtc_change_fail;
 
   /* Finalize the message and multicast it */
@@ -306,7 +306,7 @@ void ptp_work_send_rtc_increment_change(struct work_struct *work) {
   }
 
   /* Write the PTP domain identifier to the message */
-  returnValue = nla_put_u8(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainNumber);
+  returnValue = nla_put_u32(skb, PTP_EVENTS_A_DOMAIN, ptp->properties.domainIndex);
   if (returnValue != 0) goto fail;
 
   returnValue = nla_put_u32(skb, PTP_EVENTS_A_INCREMENT_M, ptp->currentIncrement.mantissa);

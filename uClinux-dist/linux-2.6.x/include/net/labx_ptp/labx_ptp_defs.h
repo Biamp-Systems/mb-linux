@@ -121,6 +121,8 @@ typedef enum {
 typedef uint8_t PtpClockIdentity[PTP_CLOCK_IDENTITY_BYTES];
 
 typedef struct {
+  /* Index of the domain (locally) */
+  uint32_t         domainIndex;
   /* Various PTP-defined properties */
   uint8_t          domainNumber;
   int16_t          currentUtcOffset;
