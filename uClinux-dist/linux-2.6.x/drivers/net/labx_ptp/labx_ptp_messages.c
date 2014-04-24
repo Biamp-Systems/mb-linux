@@ -26,8 +26,8 @@
 
 #include "labx_ptp.h"
 
-const uint8_t ipv4PrimaryMCastAddress[] = { 244, 0, 1, 129};
-const uint8_t ipv4PDelayMCastAddress[]  = { 244, 0, 1, 107};
+const uint8_t ipv4PrimaryMCastAddress[] = { 224, 0, 1, 129};
+const uint8_t ipv4PDelayMCastAddress[]  = { 224, 0, 1, 107};
 
 uint16_t in_cksum(uint8_t * bufferBase, uint32_t *wordOffset) {
     uint32_t  sum = 0;
@@ -104,9 +104,9 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
     /* End-to-end (legacy PTP 2.0 (Layer 2 & UDP/IPv4) ) */
     if (ptp->properties.packetType == PTP_IPv4) {
       /* IPv4 Multicast, derive Multicast Destination Ethernet from IP address*/
-      packetWord = 0x01005E00 | (dstIpAddress[2] & 0x7F);
+      packetWord = 0x01005E00 | (dstIpAddress[1] & 0x7F);
       write_packet(txBuffer, wordOffset, packetWord);
-      packetWord =  (dstIpAddress[1] << 24) | (dstIpAddress[0] << 16);
+      packetWord =  (dstIpAddress[2] << 24) | (dstIpAddress[3] << 16);
     } else {
       write_packet(txBuffer, wordOffset, 0x011B1900);
       packetWord = 0x00000000;
