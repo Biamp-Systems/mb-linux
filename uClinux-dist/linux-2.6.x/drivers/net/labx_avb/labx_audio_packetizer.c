@@ -596,6 +596,13 @@ static int audio_packetizer_ioctl(struct inode *inode, struct file *filp,
       if(copy_from_user(&template, (void __user*)arg, sizeof(template)) != 0) {
         return(-EFAULT);
       }
+
+      /* Sanity-check the number of words against our maximum */
+      if((template.offset + template.numWords) >
+         packetizer->capabilities.maxTemplateBytes/4) {
+        return(-ERANGE);
+      }
+
       if(copy_from_user(configWords, (void __user*)template.configWords, 
                         (template.numWords * sizeof(uint32_t))) != 0) {
         return(-EFAULT);
@@ -614,6 +621,13 @@ static int audio_packetizer_ioctl(struct inode *inode, struct file *filp,
       if(copy_from_user(&userTemplate, (void __user*)arg, sizeof(userTemplate)) != 0) {
         return(-EFAULT);
       }
+
+      /* Sanity-check the number of words against our maximum */
+      if((userTemplate.offset + userTemplate.numWords) >
+         packetizer->capabilities.maxTemplateBytes/4) {
+        return(-ERANGE);
+      }
+
       localTemplate.offset = userTemplate.offset;
       localTemplate.numWords = userTemplate.numWords;
       localTemplate.configWords = configWords;

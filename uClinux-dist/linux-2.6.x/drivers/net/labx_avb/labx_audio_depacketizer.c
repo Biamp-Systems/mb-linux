@@ -111,26 +111,26 @@ static void enable_depacketizer(struct audio_depacketizer *depacketizer) {
 }
 
 /* Flags the RTC as stable for the passed instance */
-static void set_rtc_stable(struct audio_depacketizer *depacketizer) {
+static void set_rtc_stable(struct audio_depacketizer *depacketizer, uint32_t timebaseIndex) {
   uint32_t ctrlStatusReg;
 
-  DBG("Declaring RTC stable\n");
+  DBG("Declaring RTC %d stable\n", timebaesIndex);
 
   /* Set the "RTC unstable" bit, which will coast any recovered media clock domains */
   ctrlStatusReg = XIo_In32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG));
-  ctrlStatusReg &= ~RTC_UNSTABLE;
+  ctrlStatusReg &= ~(RTC_UNSTABLE << timebaseIndex);
   XIo_Out32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG), ctrlStatusReg);
 }
 
 /* Flags the RTC as stable for the passed instance */
-static void set_rtc_unstable(struct audio_depacketizer *depacketizer) {
+static void set_rtc_unstable(struct audio_depacketizer *depacketizer, uint32_t timebaseIndex) {
   uint32_t ctrlStatusReg;
 
-  DBG("Declaring RTC unstable\n");
+  DBG("Declaring RTC %d unstable\n", timebaseIndex);
 
   /* Set the "RTC unstable" bit, which will coast any recovered media clock domains */
   ctrlStatusReg = XIo_In32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG));
-  ctrlStatusReg |= RTC_UNSTABLE;
+  ctrlStatusReg |= (RTC_UNSTABLE << timebaseIndex);
   XIo_Out32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG), ctrlStatusReg);
 }
 
@@ -625,6 +625,8 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
                    MC_CONTROL_SAMPLE_EDGE_RISING : MC_CONTROL_SAMPLE_EDGE_FALLING;
   controlValue |= (clockDomainSettings->enabled == DOMAIN_SYNC) ?
                    MC_CONTROL_SYNC_EXTERNAL : MC_CONTROL_SYNC_INTERNAL;
+  controlValue |= (clockDomainSettings->enabled == DOMAIN_COASTING) ? MC_CONTROL_FORCE_COASTING : 0;
+  controlValue |= (clockDomainSettings->ptpDomainIndex << MC_CONTROL_TIMEBASE_SHIFT);
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_CONTROL_REG),
             controlValue);
 
@@ -692,8 +694,7 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, DAC_OFFSET_REG),
             DAC_OFFSET_ZERO);
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, DAC_P_COEFF_REG),
-            (((clockDomainSettings->enabled == DOMAIN_ENABLED) ||
-	      (clockDomainSettings->enabled == DOMAIN_SYNC)) 
+            ((clockDomainSettings->enabled != DOMAIN_DISABLED)
 	     ? DAC_COEFF_MAX : DAC_COEFF_ZERO));
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, LOCK_COUNT_REG),
             ((512 << VCO_LOCK_COUNT_SHIFT) | (8 << VCO_UNLOCK_COUNT_SHIFT)));
@@ -717,7 +718,8 @@ static void get_stream_status(struct audio_depacketizer *depacketizer,
 static void reset_depacketizer(struct audio_depacketizer *depacketizer) {
   /* Disable the instance and all of its match units */
   disable_depacketizer(depacketizer);
-  set_rtc_unstable(depacketizer);
+  set_rtc_unstable(depacketizer, 0);
+  set_rtc_unstable(depacketizer, 1); // TODO: Loop through all configured timebases (for now this supports 2)
   clear_all_matchers(depacketizer);
   set_vector_base_address(depacketizer, 0x00000000);
 }
@@ -786,12 +788,14 @@ static int netlink_thread(void *data)
   struct audio_depacketizer *depacketizer = (struct audio_depacketizer*)data;
   uint32_t streamStatusGeneration = depacketizer->streamStatusGeneration;
   uint32_t irqMask;
+#ifdef SOFTWARE_MUTE_ENABLED
   unsigned int channelIndex;
   unsigned int statusWordIndex;
   static const unsigned int statusWordOffset[STREAM_STATUS_WORDS] =
       {STREAM_STATUS_0_REG, STREAM_STATUS_1_REG, STREAM_STATUS_2_REG, STREAM_STATUS_3_REG};
   uint32_t streamStatus;
   uint32_t statusWordMask;
+#endif
   uint32_t lastStreamStatus[STREAM_STATUS_WORDS];
 
   __set_current_state(TASK_RUNNING);
@@ -1078,11 +1082,27 @@ static int audio_depacketizer_ioctl(struct inode *inode, struct file *filp,
     break;
       
   case IOC_SET_RTC_STABLE:
-    set_rtc_stable(depacketizer);
+    {
+      uint32_t timebaseIndex;
+
+      if(copy_from_user(&timebaseIndex, (void __user*)arg, sizeof(timebaseIndex)) != 0) {
+        return(-EFAULT);
+      }
+
+      set_rtc_stable(depacketizer, timebaseIndex);
+    }
     break;
 
   case IOC_SET_RTC_UNSTABLE:
-    set_rtc_unstable(depacketizer);
+    {
+      uint32_t timebaseIndex;
+
+      if(copy_from_user(&timebaseIndex, (void __user*)arg, sizeof(timebaseIndex)) != 0) {
+        return(-EFAULT);
+      }
+
+      set_rtc_unstable(depacketizer, timebaseIndex);
+    }
     break;
 
   case IOC_SET_MCR_RTC_INCREMENT:

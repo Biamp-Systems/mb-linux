@@ -351,7 +351,7 @@ void rtc_update_servo(struct ptp_device *ptp, uint32_t port) {
           uint32_t wordChunk;
 
           wordChunk = (uint32_t) (accumulator >> 32);
-          printk("Acquiring, P contribution = 0x%08X", wordChunk);
+          printk("%s: Acquiring, P contribution = 0x%08X", ptp->name, wordChunk);
           wordChunk = (uint32_t) accumulator;
           printk("%08X\n", wordChunk);
         }
@@ -442,10 +442,10 @@ void rtc_update_servo(struct ptp_device *ptp, uint32_t port) {
 
 #ifdef SLAVE_OFFSET_DEBUG
     if(servoCount++ >= 10) {
-      printk("Slave offset %d\n", slaveOffset);
-      printk("  syncRxNS %d, syncTxNS %d (%d), MeanPathNS %d\n", (int)ptp->ports[port].syncRxTimestamp.nanoseconds,
+      printk("%s: Slave offset %d\n", ptp->name, slaveOffset);
+      printk("%s:   syncRxNS %d, syncTxNS %d (%d), MeanPathNS %d\n", ptp->name, (int)ptp->ports[port].syncRxTimestamp.nanoseconds,
         (int)ptp->ports[port].syncTxTimestamp.nanoseconds, (int)difference.nanoseconds, (int)ptp->ports[port].neighborPropDelay);
-      printk("RTC increment 0x%08X", newRtcIncrement);
+      printk("%s: RTC increment 0x%08X", ptp->name, newRtcIncrement);
       if(adjustment == INCREMENT_DELTA_MIN) {
         printk(" (MIN CLAMP)");
       } else if(adjustment == INCREMENT_DELTA_MAX) {

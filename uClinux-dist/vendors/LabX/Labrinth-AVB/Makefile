@@ -143,6 +143,7 @@ DEVICES += depacketizer0,c,252,0
 DEVICES += depacketizer1,c,252,1
 DEVICES += redswitch0,c,248,0
 DEVICES += ptp0,c,253,0
+DEVICES += ptp1,c,253,1
 
 # Add the Labrinth SPI mailbox peripheral device node
 DEVICES += mailbox0,c,255,0

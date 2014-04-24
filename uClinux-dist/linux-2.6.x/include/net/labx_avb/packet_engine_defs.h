@@ -103,10 +103,12 @@ typedef struct {
   uint32_t sampleRate;
   uint32_t halfPeriod;
   uint32_t remainder;
+  uint32_t ptpDomainIndex;
 } ClockDomainSettings;
 #  define DOMAIN_DISABLED            (0x00)
 #  define DOMAIN_ENABLED             (0x01)
 #  define DOMAIN_SYNC                (0x02)
+#  define DOMAIN_COASTING            (0x03)
 #  define DOMAIN_SAMPLE_EDGE_FALLING (0x00)
 #  define DOMAIN_SAMPLE_EDGE_RISING  (0x01)
 
@@ -500,11 +502,15 @@ typedef struct {
 
 /* Declarative controls for setting the RTC associated with the depacketizer as
  * being either stable or unstable.  When unstable, media clock recovery "coasts",
- * ignoring increment updates from the RTC.
+ * ignoring increment updates from the RTC. These take the timebase index as a parameter.
  */
-#define IOC_SET_RTC_STABLE         _IO(ENGINE_IOC_CHAR, (ENGINE_IOC_CLIENT_START + 7))
+#define IOC_SET_RTC_STABLE         _IOR(ENGINE_IOC_CHAR,               \
+                                        (ENGINE_IOC_CLIENT_START + 7), \
+                                        uint32_t*)
 
-#define IOC_SET_RTC_UNSTABLE       _IO(ENGINE_IOC_CHAR, (ENGINE_IOC_CLIENT_START + 8))
+#define IOC_SET_RTC_UNSTABLE       _IOR(ENGINE_IOC_CHAR,               \
+                                        (ENGINE_IOC_CLIENT_START + 8), \
+                                        uint32_t*)
 
 #define DEPACKETIZER_MAX_AUTOMUTE_STREAMS 64
 typedef struct {
@@ -526,6 +532,15 @@ typedef struct {
                                        (ENGINE_IOC_CLIENT_START + 10), \
                                        ClockDomainIncrement)
 
+typedef struct {
+  uint32_t clockDomain;
+  uint32_t coast;
+} ClockCoastSettings;
+#  define DOMAIN_FORCE_COASTING (0x01)
+
+#define IOC_CONFIG_CLOCK_RECOVERY_COAST  _IOW(ENGINE_IOC_CHAR,               \
+                                              (ENGINE_IOC_CLIENT_START + 11), \
+                                              ClockCoastSettings)
 /* Type definitions and macros for depacketizer microcode */
 
 /* Parameter maxima */
@@ -550,6 +565,7 @@ typedef struct {
 #define DEPACKETIZER_NULL_BYTE_SHIFT(slotBits)    (DEPACKETIZER_ROTATE_COUNT_SHIFT(slotBits) + 2)
 #define DEPACKETIZER_NULL_BYTE_MASK               (0x03)
 #define DEPACKETIZER_NULL_FLAG(slotBits)          (0x01 << (DEPACKETIZER_NULL_BYTE_SHIFT(slotBits) + 2))
+#define DEPACKETIZER_TIMEBASE_SHIFT(slotBits)     (DEPACKETIZER_NULL_BYTE_SHIFT(slotBits) + 3)
 
 #define DEPACKETIZER_PARAM_SOURCE_FALSE        (0x00)
 #define DEPACKETIZER_PARAM_SOURCE_TRUE         (0x01)
@@ -578,15 +594,17 @@ typedef struct {
  * @param nullActive  - Flag controlling whether a byte of each sample is to be replaced by a
  *                      null (0x00) byte
  * @param nullIndex   - Index of the byte to be replaced with a null byte
+ * @param timebase    - Index of the timebase used by this stream
  */
 #define DEPACKETIZER_NULL_INACTIVE (0)
 #define DEPACKETIZER_NULL_ACTIVE   (1)
-#define DEPACKETIZER_AUDIO_SAMPLES(slotBits, sampleSize, numChannels, rotateCount, nullActive, nullIndex)      \
-  ((uint32_t) ((DEPACKETIZER_OPCODE_AUDIO_SAMPLES << DEPACKETIZER_OPCODE_SHIFT)                              | \
-               (nullActive ? DEPACKETIZER_NULL_FLAG(slotBits) : 0x00000000)                                  | \
-               ((nullIndex & DEPACKETIZER_NULL_BYTE_MASK) << DEPACKETIZER_NULL_BYTE_SHIFT(slotBits))         | \
-               ((rotateCount & DEPACKETIZER_ROTATE_COUNT_MASK) << DEPACKETIZER_ROTATE_COUNT_SHIFT(slotBits)) | \
-               ((numChannels - 1) << DEPACKETIZER_PACKET_SLOT_SHIFT)                                         | \
+#define DEPACKETIZER_AUDIO_SAMPLES(slotBits, sampleSize, numChannels, rotateCount, nullActive, nullIndex, timebase)   \
+  ((uint32_t) ((DEPACKETIZER_OPCODE_AUDIO_SAMPLES << DEPACKETIZER_OPCODE_SHIFT)                                     | \
+               (timebase << DEPACKETIZER_TIMEBASE_SHIFT(slotBits))                                                  | \
+               (nullActive ? DEPACKETIZER_NULL_FLAG(slotBits) : 0x00000000)                                         | \
+               ((nullIndex & DEPACKETIZER_NULL_BYTE_MASK) << DEPACKETIZER_NULL_BYTE_SHIFT(slotBits))                | \
+               ((rotateCount & DEPACKETIZER_ROTATE_COUNT_MASK) << DEPACKETIZER_ROTATE_COUNT_SHIFT(slotBits))        | \
+               ((numChannels - 1) << DEPACKETIZER_PACKET_SLOT_SHIFT)                                                | \
                ((sampleSize - 1) & DEPACKETIZER_SAMPLE_SIZE_MASK)))
 
 /* Returns a CHECK_SEQUENCE instruction
