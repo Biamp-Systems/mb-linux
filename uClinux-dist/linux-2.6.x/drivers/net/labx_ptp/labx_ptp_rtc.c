@@ -404,7 +404,7 @@ void rtc_update_servo(struct ptp_device *ptp, uint32_t port) {
       /* Accumulate the derivitave coefficient's contribution */
       coefficient = (int64_t) ptp->coefficients.D;
       ptp->derivative += (slaveOffset - ptp->previousOffset); /* TODO: Scale based on the time between syncs? */
-      accumulator += ((coefficient * (int64_t)ptp->derivative) >> COEFF_PRODUCT_SHIFT);
+      accumulator += ((coefficient * ptp->derivative) >> COEFF_PRODUCT_SHIFT);
       ptp->previousOffset = slaveOffset;
 
     }
