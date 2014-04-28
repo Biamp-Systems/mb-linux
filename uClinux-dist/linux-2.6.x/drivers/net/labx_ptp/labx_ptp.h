@@ -313,6 +313,13 @@ typedef enum { PortRoleSelection_INIT_BRIDGE, PortRoleSelection_ROLE_SELECTION
 #define PDELAY_REQ_INTERVAL_TICKS(ptp, port) \
   SIGNED_SHIFT((1000/PTP_TIMER_TICK_MS), ((ptp)->ports[(port)].currentLogPdelayReqInterval))
 
+/* Window sizes for smoothing filters. Filter removes
+ * the highest and lowest values in the current window
+ * as outliers, and averages the rest. Set the window
+ * sizes to zero to disable the filters. */
+#define NEIGHBOR_RATE_RATIO_WINDOW_SIZE 5
+#define NEIGHBOR_PROP_DELAY_WINDOW_SIZE 10
+
 /* Definitions and macros for manipulating port numbers */
 #define PTP_PORT_NUMBER_BYTES sizeof(uint16_t)
 typedef uint8_t PtpPortNumber[PTP_PORT_NUMBER_BYTES];
@@ -379,6 +386,7 @@ struct ptp_port {
   /* End-to-end delay mechanism timing parameters */
   PtpTime syncRxTimestampTemp;
   PtpTime syncRxTimestamp;
+  PtpTime syncRxLocalTimestamp;
   PtpTime syncTxTimestamp;
   uint32_t syncTimestampsValid;
   PtpTime delayReqTxTimestampTemp;
@@ -505,6 +513,18 @@ struct ptp_port {
 
   /* Packet statistics */
   PtpAsPortStatistics stats;
+
+  /* Variables for filtering */
+#if NEIGHBOR_RATE_RATIO_WINDOW_SIZE > 0
+  uint32_t neighborRateRatioWindow[NEIGHBOR_RATE_RATIO_WINDOW_SIZE];
+  int32_t neighborRateRatioWindowIndex;
+  uint32_t neighborRateRatioFilterInitialized;
+#endif
+#if NEIGHBOR_PROP_DELAY_WINDOW_SIZE > 0
+  int32_t neighborPropDelayWindow[NEIGHBOR_PROP_DELAY_WINDOW_SIZE];
+  int32_t neighborPropDelayWindowIndex;
+  uint32_t neighborPropDelayFilterInitialized;
+#endif
 
   /* Per port path trace data */
   uint32_t           pathTraceLength;               

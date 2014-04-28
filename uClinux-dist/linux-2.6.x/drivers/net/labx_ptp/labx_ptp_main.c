@@ -743,6 +743,16 @@ static int ptp_probe(const char *name,
     }
 
     ptp->ports[i].portProperties.stepsRemoved = 0;
+
+    /* Mark our smoothing filters as uninitialized. */
+#if NEIGHBOR_RATE_RATIO_WINDOW_SIZE > 0
+    ptp->ports[i].neighborRateRatioWindowIndex = 0;
+    ptp->ports[i].neighborRateRatioFilterInitialized = 0;
+#endif
+#if NEIGHBOR_PROP_DELAY_WINDOW_SIZE > 0
+    ptp->ports[i].neighborPropDelayWindowIndex = 0;
+    ptp->ports[i].neighborPropDelayFilterInitialized = 0;
+#endif
   }
   static uint32_t domainIndex = 0;
   ptp->properties.domainIndex          = domainIndex++;

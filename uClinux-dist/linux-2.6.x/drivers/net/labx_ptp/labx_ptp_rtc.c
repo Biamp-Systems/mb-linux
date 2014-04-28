@@ -28,6 +28,7 @@
 
 /* Uncomment to print debug messages for the slave offset */
 /* #define SLAVE_OFFSET_DEBUG */
+/* #define AVERAGE_WINDOW_DEBUG */
 
 /* Threshold and purely-proportional coefficient to use when in phase
  * acquisition mode
@@ -142,6 +143,177 @@ void update_rtc_lock_detect(struct ptp_device *ptp) {
 static uint32_t servoCount = 0;
 #endif
 
+static uint32_t update_rate_ratio_filter(struct ptp_device *ptp, uint32_t port, uint32_t rateRatio) {
+#if NEIGHBOR_RATE_RATIO_WINDOW_SIZE > 0
+  uint32_t i;
+  uint32_t filterMinIndex;
+  uint32_t filterMaxIndex;
+  uint32_t filterMinValue;
+  uint32_t filterMaxValue;
+  uint32_t filterTempCount;
+  uint64_t filterTempSum;
+
+#ifdef AVERAGE_WINDOW_DEBUG
+  printk("NRRF: New Ratio %08X\n", rateRatio);
+#endif
+
+  // neighborRatioRatio filtering happens here.
+  // Our filter tosses the highest and lowest values
+  // in our current window of rateRatios, and averages
+  // the rest of them.
+
+  ptp->ports[port].neighborRateRatioWindow[ptp->ports[port].neighborRateRatioWindowIndex] = rateRatio;
+  ptp->ports[port].neighborRateRatioWindowIndex++;
+
+  if(!ptp->ports[port].neighborRateRatioFilterInitialized &&
+     ptp->ports[port].neighborRateRatioWindowIndex == NEIGHBOR_RATE_RATIO_WINDOW_SIZE) {
+    ptp->ports[port].neighborRateRatioFilterInitialized = 1;
+  }
+
+  ptp->ports[port].neighborRateRatioWindowIndex %= NEIGHBOR_RATE_RATIO_WINDOW_SIZE;
+
+  filterMinIndex = 0;
+  filterMaxIndex = 0;
+  filterMinValue = 0xFFFFFFFF;
+  filterMaxValue = 0;
+  filterTempCount = 0;
+  filterTempSum = 0;
+
+  if(ptp->ports[port].neighborRateRatioFilterInitialized) {
+    // We're going to filter out the max and min values
+    // (outliers). Find where they reside. The rate ratio
+    // is a 1.31 fixed point number, so we can do regular
+    // arithmetic with it.
+    for(i = 0; i < NEIGHBOR_RATE_RATIO_WINDOW_SIZE; i++) {
+      if(ptp->ports[port].neighborRateRatioWindow[i] < filterMinValue) {
+        filterMinIndex = i;
+        filterMinValue = ptp->ports[port].neighborRateRatioWindow[i];
+      }
+
+      if(ptp->ports[port].neighborRateRatioWindow[i] > filterMaxValue) {
+        filterMaxIndex = i;
+        filterMaxValue = ptp->ports[port].neighborRateRatioWindow[i];
+      }
+    }
+
+    // We're going to take the sum of the other values.
+    // Add them up.
+    for(i = 0; i < NEIGHBOR_RATE_RATIO_WINDOW_SIZE; i++) {
+      if(i != filterMinIndex && i != filterMaxIndex) {
+        filterTempSum += ptp->ports[port].neighborRateRatioWindow[i];
+        filterTempCount++;
+      }
+    }
+  } else {
+    // Otherwise, we will just average the values that
+    // we already have.
+    for(i = 0; i < ptp->ports[port].neighborRateRatioWindowIndex; i++) {
+      filterTempSum += ptp->ports[port].neighborRateRatioWindow[i];
+      filterTempCount++;
+    }
+  }
+  // Now compute the averaged rate ratio.
+  rateRatio = (uint32_t)(filterTempSum / filterTempCount);
+
+#ifdef AVERAGE_WINDOW_DEBUG
+  printk("NRRF: Average Ratio %08X { ", rateRatio);
+  for(i = 0; i < NEIGHBOR_RATE_RATIO_WINDOW_SIZE; i++) {
+    printk("%08X ", ptp->ports[port].neighborRateRatioWindow[i]);
+  }
+  printk("} %08X%08X / %d\n", (uint32_t)(filterTempSum >> 32), (uint32_t)filterTempSum, filterTempCount);
+#endif
+
+  // End filtering.
+#endif // #if NEIGHBOR_RATE_RATIO_WINDOW_SIZE > 0
+
+  return rateRatio;
+}
+
+static uint32_t update_prop_delay_filter(struct ptp_device *ptp, uint32_t port, uint32_t neighborPropDelay) {
+#if NEIGHBOR_PROP_DELAY_WINDOW_SIZE > 0
+  uint32_t i;
+  uint32_t filterMinIndex;
+  uint32_t filterMaxIndex;
+  uint32_t filterMinValue;
+  uint32_t filterMaxValue;
+  uint32_t filterTempCount;
+  uint64_t filterTempSum;
+
+#ifdef AVERAGE_WINDOW_DEBUG
+  printk("NPDF: New Prop Delay %08X\n", neighborPropDelay);
+#endif
+
+  // neighborPropDelay filtering happens here.
+  // Our filter tosses the highest and lowest values
+  // in our current window of prop delays, and averages
+  // the rest of them.
+
+  ptp->ports[port].neighborPropDelayWindow[ptp->ports[port].neighborPropDelayWindowIndex] = neighborPropDelay;
+  ptp->ports[port].neighborPropDelayWindowIndex++;
+
+  if(!ptp->ports[port].neighborPropDelayFilterInitialized &&
+     ptp->ports[port].neighborPropDelayWindowIndex == NEIGHBOR_PROP_DELAY_WINDOW_SIZE) {
+    ptp->ports[port].neighborPropDelayFilterInitialized = 1;
+  }
+
+  ptp->ports[port].neighborPropDelayWindowIndex %= NEIGHBOR_PROP_DELAY_WINDOW_SIZE;
+
+  filterMinIndex = 0;
+  filterMaxIndex = 0;
+  filterMinValue = 0x7FFFFFFF; // Max two's complement number
+  filterMaxValue = 0x80000000; // Min two's complement number
+  filterTempCount = 0;
+  filterTempSum = 0;
+
+  if(ptp->ports[port].neighborPropDelayFilterInitialized) {
+    // We're going to filter out the max and min values
+    // (outliers). Find where they reside.
+    for(i = 0; i < NEIGHBOR_PROP_DELAY_WINDOW_SIZE; i++) {
+      if(ptp->ports[port].neighborPropDelayWindow[i] < filterMinValue) {
+        filterMinIndex = i;
+        filterMinValue = ptp->ports[port].neighborPropDelayWindow[i];
+      }
+
+      if(ptp->ports[port].neighborPropDelayWindow[i] > filterMaxValue) {
+        filterMaxIndex = i;
+        filterMaxValue = ptp->ports[port].neighborPropDelayWindow[i];
+      }
+    }
+
+    // We're going to take the sum of the other values.
+    // Add them up.
+    for(i = 0; i < NEIGHBOR_PROP_DELAY_WINDOW_SIZE; i++) {
+      if(i != filterMinIndex && i != filterMaxIndex) {
+        filterTempSum += ptp->ports[port].neighborPropDelayWindow[i];
+        filterTempCount++;
+      }
+    }
+  } else {
+    // Otherwise, we will just average the values that
+    // we already have.
+    for(i = 0; i < ptp->ports[port].neighborPropDelayWindowIndex; i++) {
+      filterTempSum += ptp->ports[port].neighborPropDelayWindow[i];
+      filterTempCount++;
+    }
+  }
+
+  // Now compute the averaged rate ratio.
+  neighborPropDelay = (uint32_t)(filterTempSum / filterTempCount);
+
+#ifdef AVERAGE_WINDOW_DEBUG
+  printk("NPDF: Average Prop Delay %08X { ", neighborPropDelay);
+  for(i = 0; i < NEIGHBOR_PROP_DELAY_WINDOW_SIZE; i++) {
+    printk("%08X ", ptp->ports[port].neighborPropDelayWindow[i]);
+  }
+  printk("} %08X%08X / %d\n", (uint32_t)(filterTempSum >> 32), (uint32_t)filterTempSum, filterTempCount);
+#endif
+
+  // End filtering.
+#endif // #if NEIGHBOR_PROP_DELAY_WINDOW_SIZE > 0
+
+  return neighborPropDelay;
+}
+
 /* Calculate the rate ratio from the master. Note that we reuse the neighbor rate ratio 
    fields from PDELAY but it is really the master we are talking to here. */
 static void computeDelayRateRatio(struct ptp_device *ptp, uint32_t port)
@@ -178,16 +350,17 @@ static void computeDelayRateRatio(struct ptp_device *ptp, uint32_t port)
       nsResponder = ((uint64_t)difference.secondsLower) * 1000000000ULL + (uint64_t)difference.nanoseconds;
       nsRequester = ((uint64_t)difference2.secondsLower) * 1000000000ULL + (uint64_t)difference2.nanoseconds;
 
-      for (shift = 0; shift < 31; shift++)
-        {
-          if (nsResponder & (1ULL<<(63-shift))) break;
-        }
+      for (shift = 0; shift < 31; shift++) {
+        if (nsResponder & (1ULL<<(63-shift))) break;
+      }
 
       if ((nsRequester >> (31-shift)) != 0) {
         rateRatio = (nsResponder << shift) / (nsRequester >> (31-shift));
         if (((uint32_t)rateRatio < RATE_RATIO_MAX) && ((uint32_t)rateRatio > RATE_RATIO_MIN)) {
+
+          rateRatio = update_rate_ratio_filter(ptp, port, rateRatio);
+
           ptp->ports[port].neighborRateRatio = (uint32_t)rateRatio;
- 
           ptp->ports[port].neighborRateRatioValid = TRUE;
 
           /* Master rate is the same for E2E mode */
@@ -224,6 +397,7 @@ void rtc_update_servo(struct ptp_device *ptp, uint32_t port) {
      */
     if(ptp->ports[port].syncTimestampsValid && ptp->ports[port].delayReqTimestampsValid) {
       PtpTime difference2;
+      PtpTime difference3;
     
       computeDelayRateRatio(ptp, port);
 
@@ -239,17 +413,34 @@ void rtc_update_servo(struct ptp_device *ptp, uint32_t port) {
        * Offset_m_s = [(SYNC_Rx - SYNC_Tx) + (DELAY_REQ_Tx - DELAY_REQ_Rx)] / 2
        */
       timestamp_difference(&ptp->ports[port].syncRxTimestamp, &ptp->ports[port].syncTxTimestamp, &difference);
-      timestamp_difference(&ptp->ports[port].delayReqTxTimestamp, &ptp->ports[port].delayReqRxTimestamp, &difference2);
+      timestamp_difference(&ptp->ports[port].syncRxLocalTimestamp, &ptp->ports[port].delayReqTxLocalTimestamp, &difference2);
+      timestamp_difference(&ptp->ports[port].syncTxTimestamp, &ptp->ports[port].delayReqRxTimestamp, &difference3);
+
+#if 0
+      {
+        PtpTime difference4;
+        timestamp_difference(&difference3, &difference2, &difference4);
+        printk("NPD: t1: %08X.%08X t2: %08X.%08X t3: %08X.%08X t4: %08X.%08X\n",
+          ptp->ports[port].syncTxTimestamp.secondsLower, ptp->ports[port].syncTxTimestamp.nanoseconds,
+          ptp->ports[port].syncRxLocalTimestamp.secondsLower, ptp->ports[port].syncRxLocalTimestamp.nanoseconds,
+          ptp->ports[port].delayReqTxLocalTimestamp.secondsLower, ptp->ports[port].delayReqTxLocalTimestamp.nanoseconds,
+          ptp->ports[port].delayReqRxTimestamp.secondsLower, ptp->ports[port].delayReqRxTimestamp.nanoseconds);
+        printk("NPD: %08X.%08X - %08X.%08X = %08X.%08X, PD = %d\n",
+          difference2.secondsLower, difference2.nanoseconds,
+          difference3.secondsLower, difference3.nanoseconds,
+          difference4.secondsLower, difference4.nanoseconds,
+          (difference2.nanoseconds - difference3.nanoseconds)/2);
+      }
+#endif
       
+      /* Save the delay in the same spot as P2P mode does for consistency. */
+      ptp->ports[port].neighborPropDelay = update_prop_delay_filter(ptp, port, (difference2.nanoseconds - difference3.nanoseconds)>>1);
+
       /* The fact that this is called at all implies there's a < 1 sec slaveOffset; deal
        * strictly with nanoseconds now that the seconds have been normalized.
        */
-      slaveOffset = (((int32_t) difference.nanoseconds) + ((int32_t) difference2.nanoseconds));
-      slaveOffset >>= 1;
+      slaveOffset = ((int32_t) difference.nanoseconds) - ptp->ports[port].neighborPropDelay;
       slaveOffsetValid = PTP_RTC_OFFSET_VALID;
-
-      /* Save the delay in the same spot as P2P mode does for consistency. */
-      ptp->ports[port].neighborPropDelay = (-difference2.nanoseconds) + slaveOffset;
 
       /* Mark the delay timestamps as invalid so we don't keep using them with their old offset */
       ptp->ports[port].delayReqTimestampsValid = 0;

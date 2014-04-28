@@ -271,6 +271,7 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
      * followup that should follow.
      */
     get_hardware_timestamp(ptp, port, RECEIVED_PACKET, rxBuffer, &tempTimestamp);
+    get_local_hardware_timestamp(ptp, port, RECEIVED_PACKET, rxBuffer, &ptp->ports[port].syncRxLocalTimestamp);
     get_correction_field(ptp, port, rxBuffer, &correctionField);
     timestamp_difference(&tempTimestamp, &correctionField, &correctedTimestamp);
 
@@ -291,13 +292,13 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
       linkDelay.secondsLower = 0;
       linkDelay.nanoseconds = ptp->ports[port].neighborPropDelay;
       for (i=0; i<ptp->numPorts; i++) {
-	if (ptp->ports[i].selectedRole == PTP_MASTER) {
+        if (ptp->ports[i].selectedRole == PTP_MASTER) {
           // Save the received time (with link delay) for later calculation of residency time
           timestamp_difference(&syncRxTimestamp, &linkDelay, &ptp->ports[i].syncRxTimestamp);
           get_source_port_id(ptp, port, RECEIVED_PACKET, rxBuffer, &ptp->ports[i].syncSourcePortId[0]);
           ptp->ports[i].syncSequenceId = ptp->ports[port].syncSequenceId;
           transmit_sync(ptp, i);
-	}
+        }
       }
     } /* if(received sync on SLAVE port) */
   }
