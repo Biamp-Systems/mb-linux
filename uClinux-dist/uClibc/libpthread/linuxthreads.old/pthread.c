@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/time.h>
 #include <sys/resource.h>
 #include "pthread.h"
 #include "internals.h"
@@ -214,7 +215,9 @@ static void pthread_onexit_process(int retcode, void *arg);
 static void pthread_handle_sigcancel(int sig);
 static void pthread_handle_sigrestart(int sig);
 static void pthread_handle_sigdebug(int sig);
-int __pthread_timedsuspend_new(pthread_descr self, const struct timespec *abstime);
+int __pthread_timedsuspend_new(pthread_descr self, 
+                               const struct timespec *abstime,
+                               const clockid_t clock_id);
 
 /* Signal numbers used for the communication.
    In these variables we keep track of the used variables.  If the
@@ -237,7 +240,7 @@ int __pthread_sig_cancel = __SIGRTMIN + 1;
 int __pthread_sig_debug = __SIGRTMIN + 2;
 void (*__pthread_restart)(pthread_descr) = __pthread_restart_new;
 void (*__pthread_suspend)(pthread_descr) = __pthread_wait_for_restart_signal;
-int (*__pthread_timedsuspend)(pthread_descr, const struct timespec *) = __pthread_timedsuspend_new;
+int (*__pthread_timedsuspend)(pthread_descr, const struct timespec *, const clockid_t) = __pthread_timedsuspend_new;
 #else
 static int current_rtmin = __SIGRTMIN;
 static int current_rtmax = __SIGRTMAX;
@@ -248,6 +251,19 @@ void (*__pthread_restart)(pthread_descr) = __pthread_restart_old;
 void (*__pthread_suspend)(pthread_descr) = __pthread_suspend_old;
 int (*__pthread_timedsuspend)(pthread_descr, const struct timespec *) = __pthread_timedsuspend_old;
 
+#endif
+
+#ifndef _POSIX_MONOTONIC_CLOCK
+#define __pthread_now(clock_id, now)   \
+    do {                               \
+      struct timeval tv;               \
+                                       \
+      gettimeofday(&tv, NULL);         \
+      TIMEVAL_TO_TIMESPEC(*now, tv);   \
+    } while(0);
+#else
+#define __pthread_now(clock_id, now)   \
+    clock_gettime(clock_id, now);
 #endif
 
 /* Return number of available real-time signal with highest priority.  */
@@ -1021,7 +1037,9 @@ void __pthread_suspend_old(pthread_descr self)
 }
 
 int
-__pthread_timedsuspend_old(pthread_descr self, const struct timespec *abstime)
+__pthread_timedsuspend_old(pthread_descr self, 
+                           const struct timespec *abstime,
+                           const clockid_t clock_id)
 {
   sigset_t unblock, initial_mask;
   int was_signalled = 0;
@@ -1040,13 +1058,13 @@ __pthread_timedsuspend_old(pthread_descr self, const struct timespec *abstime)
       sigprocmask(SIG_UNBLOCK, &unblock, &initial_mask);
 
       while (1) {
-	struct timeval now;
+	struct timespec now;
 	struct timespec reltime;
 
 	/* Compute a time offset relative to now.  */
-	gettimeofday (&now, NULL);
-	reltime.tv_nsec = abstime->tv_nsec - now.tv_usec * 1000;
-	reltime.tv_sec = abstime->tv_sec - now.tv_sec;
+	__pthread_now(clock_id, &now);
+        reltime.tv_nsec = abstime->tv_nsec - now.tv_nsec;
+        reltime.tv_sec = abstime->tv_sec - now.tv_sec;
 	if (reltime.tv_nsec < 0) {
 	  reltime.tv_nsec += 1000000000;
 	  reltime.tv_sec -= 1;
@@ -1110,7 +1128,7 @@ void __pthread_restart_new(pthread_descr th)
     kill(th->p_pid, __pthread_sig_restart);
 }
 
-int __pthread_timedsuspend_new(pthread_descr self, const struct timespec *abstime)
+int __pthread_timedsuspend_new(pthread_descr self, const struct timespec *abstime, const clockid_t clock_id)
 {
     sigset_t unblock, initial_mask;
     int was_signalled = 0;
@@ -1125,13 +1143,13 @@ int __pthread_timedsuspend_new(pthread_descr self, const struct timespec *abstim
 	sigprocmask(SIG_UNBLOCK, &unblock, &initial_mask);
 
 	while (1) {
-	    struct timeval now;
+	    struct timespec now;
 	    struct timespec reltime;
 
 	    /* Compute a time offset relative to now.  */
-	    gettimeofday (&now, NULL);
-	    reltime.tv_nsec = abstime->tv_nsec - now.tv_usec * 1000;
-	    reltime.tv_sec = abstime->tv_sec - now.tv_sec;
+	    __pthread_now(clock_id, &now);
+            reltime.tv_nsec = abstime->tv_nsec - now.tv_nsec;
+            reltime.tv_sec = abstime->tv_sec - now.tv_sec;
 	    if (reltime.tv_nsec < 0) {
 		reltime.tv_nsec += 1000000000;
 		reltime.tv_sec -= 1;

@@ -258,7 +258,7 @@ int sem_timedwait(sem_t *sem, const struct timespec *abstime)
   spurious_wakeup_count = 0;
   while (1)
     {
-      if (timedsuspend(self, abstime) == 0) {
+      if (timedsuspend(self, abstime, CLOCK_REALTIME) == 0) {
 	int was_on_queue;
 
 	/* __pthread_lock will queue back any spurious restarts that

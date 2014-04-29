@@ -19,6 +19,8 @@
 #include <sched.h>
 #include <stddef.h>
 #include <sys/time.h>
+#include <sys/syscall.h>
+#include <assert.h>
 #include "pthread.h"
 #include "internals.h"
 #include "spinlock.h"
@@ -34,12 +36,26 @@ libpthread_hidden_proto(pthread_cond_timedwait)
 
 libpthread_hidden_proto(pthread_condattr_destroy)
 libpthread_hidden_proto(pthread_condattr_init)
+libpthread_hidden_proto(pthread_condattr_getclock)
+libpthread_hidden_proto(pthread_condattr_setclock)
 
 int pthread_cond_init(pthread_cond_t *cond,
-                      const pthread_condattr_t *cond_attr attribute_unused)
+                      const pthread_condattr_t *attr)
 {
   __pthread_init_lock(&cond->__c_lock);
   cond->__c_waiting = NULL;
+
+  /* Only CLOCK_REALTIME and CLOCK_MONOTONIC timers supported.
+     Use CLOCK_REALTIME by default. */
+
+  if (attr == NULL)
+    cond->__c_clock_id = CLOCK_REALTIME;
+  else
+  if (attr->__clock_id != CLOCK_REALTIME && attr->__clock_id != CLOCK_MONOTONIC)
+    return EINVAL;
+  else
+    cond->__c_clock_id = attr->__clock_id;
+  
   return 0;
 }
 libpthread_hidden_def(pthread_cond_init)
@@ -189,9 +205,8 @@ pthread_cond_timedwait_relative(pthread_cond_t *cond,
   spurious_wakeup_count = 0;
   while (1)
     {
-      if (!timedsuspend(self, abstime)) {
-	int was_on_queue;
-
+       if (timedsuspend(self, abstime, cond->__c_clock_id) == 0) {
+        int was_on_queue;
 	/* __pthread_lock will queue back any spurious restarts that
 	   may happen to it. */
 
@@ -283,11 +298,55 @@ int pthread_cond_broadcast(pthread_cond_t *cond)
 }
 libpthread_hidden_def(pthread_cond_broadcast)
 
-int pthread_condattr_init(pthread_condattr_t *attr attribute_unused)
+int pthread_condattr_init(pthread_condattr_t *attr)
 {
+  if (attr == NULL)
+    return EINVAL;
+
+  attr->__clock_id = CLOCK_REALTIME;
+
   return 0;
 }
 libpthread_hidden_def(pthread_condattr_init)
+
+int pthread_condattr_getclock(const pthread_condattr_t *attr, clockid_t *clock_id)
+{
+  if (attr == NULL)
+    return EINVAL;
+
+  *clock_id = attr->__clock_id;
+
+  return 0;
+}
+libpthread_hidden_def(pthread_condattr_getclock)
+
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock_id)
+{
+  if (attr == NULL)
+    return EINVAL;
+
+  if (clock_id == CLOCK_MONOTONIC) {
+#ifdef _POSIX_MONOTONIC_CLOCK
+    /* Check whether the clock is available. */
+
+   struct timespec res;
+
+    if (clock_getres(CLOCK_MONOTONIC, &res) < 0)
+     return EINVAL;
+#else
+   /* Not available.  */
+   return EINVAL;
+#endif
+  } else
+  if (clock_id != CLOCK_REALTIME)
+    /* Only CLOCK_REALTIME and CLOCK_MONOTONIC allowed. */
+    return EINVAL;
+
+  attr->__clock_id = clock_id;
+
+  return 0;
+}
+libpthread_hidden_def(pthread_condattr_setclock)
 
 int pthread_condattr_destroy(pthread_condattr_t *attr attribute_unused)
 {

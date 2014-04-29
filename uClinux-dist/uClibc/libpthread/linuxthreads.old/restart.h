@@ -12,6 +12,7 @@
 /* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the        */
 /* GNU Library General Public License for more details.                 */
 
+#include <time.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #define __ASSUME_REALTIME_SIGNALS defined(__NR_rt_sigaction)
@@ -39,12 +40,13 @@ static __inline__ void suspend(pthread_descr self)
 }
 
 static __inline__ int timedsuspend(pthread_descr self,
-		const struct timespec *abstime)
+		const struct timespec *abstime,
+                const clockid_t clock_id)
 {
   /* See pthread.c */
 #if __ASSUME_REALTIME_SIGNALS
-  return __pthread_timedsuspend_new(self, abstime);
+  return __pthread_timedsuspend_new(self, abstime, clock_id);
 #else
-  return __pthread_timedsuspend(self, abstime);
+  return __pthread_timedsuspend(self, abstime, clock_id);
 #endif
 }

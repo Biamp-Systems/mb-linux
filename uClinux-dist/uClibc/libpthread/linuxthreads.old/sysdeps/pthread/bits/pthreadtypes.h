@@ -57,13 +57,14 @@ typedef struct
 {
   struct _pthread_fastlock __c_lock; /* Protect against concurrent access */
   _pthread_descr __c_waiting;        /* Threads waiting on this condition */
+  __clockid_t __c_clock_id;          /* Condition clock type */ 
 } pthread_cond_t;
 
 
 /* Attribute for conditionally variables.  */
 typedef struct
 {
-  int __dummy;
+  __clockid_t __clock_id;
 } pthread_condattr_t;
 
 /* Keys for thread-specific data */

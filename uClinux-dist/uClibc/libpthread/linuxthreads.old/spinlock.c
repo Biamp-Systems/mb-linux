@@ -499,7 +499,7 @@ int __pthread_alt_timedlock(struct _pthread_fastlock * lock,
      queue. If we fail, it means the owner gave us the lock. */
 
   if (oldstatus != 0) {
-    if (timedsuspend(self, abstime) == 0) {
+    if (timedsuspend(self, abstime, CLOCK_REALTIME) == 0) {
       if (!testandset(&p_wait_node->abandoned))
 	return 0; /* Timeout! */
 
