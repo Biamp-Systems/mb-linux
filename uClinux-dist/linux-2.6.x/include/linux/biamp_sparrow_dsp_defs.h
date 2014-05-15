@@ -35,14 +35,14 @@ typedef struct {
   uint32_t addr;
   uint32_t data;
   uint32_t mask;
-} SparrowDspData;
+} SparrowDspInfo;
 
 /* I/O control commands and structures specific to the audio tdm hardware */
 #define SPARROW_DSP_IOC_CHAR            ('t')
-#define IOC_GET_SPARROW_DSP_DATA       _IOR(SPARROW_DSP_IOC_CHAR, 0x00, SparrowDspData)
-#define IOC_SET_SPARROW_DSP_DATA       _IOW(SPARROW_DSP_IOC_CHAR, 0x01, SparrowDspData)
-#define IOC_SET_SPARROW_DSP_DATA_BIT   _IOW(SPARROW_DSP_IOC_CHAR, 0x02, SparrowDspData)
-#define IOC_CLEAR_SPARROW_DSP_DATA_BIT _IOW(SPARROW_DSP_IOC_CHAR, 0x03, SparrowDspData)
-#define IOC_MODIFY_SPARROW_DSP_DATA    _IOW(SPARROW_DSP_IOC_CHAR, 0x04, SparrowDspData)
+#define IOC_GET_SPARROW_DSP_REG       _IOR(SPARROW_DSP_IOC_CHAR, 0x00, SparrowDspInfo)
+#define IOC_SET_SPARROW_DSP_REG       _IOW(SPARROW_DSP_IOC_CHAR, 0x01, SparrowDspInfo)
+#define IOC_SET_SPARROW_DSP_REG_BIT   _IOW(SPARROW_DSP_IOC_CHAR, 0x02, SparrowDspInfo)
+#define IOC_CLEAR_SPARROW_DSP_REG_BIT _IOW(SPARROW_DSP_IOC_CHAR, 0x03, SparrowDspInfo)
+#define IOC_MODIFY_SPARROW_DSP_REG    _IOW(SPARROW_DSP_IOC_CHAR, 0x04, SparrowDspInfo)
 
 #endif

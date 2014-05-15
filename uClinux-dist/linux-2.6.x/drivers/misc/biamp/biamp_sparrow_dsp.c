@@ -126,35 +126,35 @@ static int dsp_release(struct inode *inode, struct file *filp)
 }
 
 static void set_sparrow_dsp_data(struct sparrow_dsp *dsp,
-                                SparrowDspData *dspData) {
-  XIo_Out32(REGISTER_ADDRESS(dsp, dspData->addr), dspData->data);
+                                SparrowDspInfo *dspInfo) {
+  XIo_Out32(REGISTER_ADDRESS(dsp, dspInfo->addr), dspInfo->data);
 }
 
 static void get_sparrow_dsp_data(struct sparrow_dsp *dsp,
-                                SparrowDspData *dspData) {
-  dspData->data = XIo_In32(REGISTER_ADDRESS(dsp, dspData->addr));
+                                SparrowDspInfo *dspInfo) {
+  dspInfo->data = XIo_In32(REGISTER_ADDRESS(dsp, dspInfo->addr));
 }
 
 static void set_sparrow_dsp_data_bit(struct sparrow_dsp *dsp,
-                                     SparrowDspData *dspData) {
-  uint32_t reg = XIo_In32(REGISTER_ADDRESS(dsp, dspData->addr));
-  reg |= dspData->mask;
-  XIo_Out32(REGISTER_ADDRESS(dsp, dspData->addr), reg);
+                                     SparrowDspInfo *dspInfo) {
+  uint32_t reg = XIo_In32(REGISTER_ADDRESS(dsp, dspInfo->addr));
+  reg |= dspInfo->mask;
+  XIo_Out32(REGISTER_ADDRESS(dsp, dspInfo->addr), reg);
 }
 
 static void clear_sparrow_dsp_data_bit(struct sparrow_dsp *dsp,
-                                            SparrowDspData *dspData) {
-  uint32_t reg = XIo_In32(REGISTER_ADDRESS(dsp, dspData->addr));
-  reg &= ~dspData->mask;
-  XIo_Out32(REGISTER_ADDRESS(dsp, dspData->addr), reg);
+                                            SparrowDspInfo *dspInfo) {
+  uint32_t reg = XIo_In32(REGISTER_ADDRESS(dsp, dspInfo->addr));
+  reg &= ~dspInfo->mask;
+  XIo_Out32(REGISTER_ADDRESS(dsp, dspInfo->addr), reg);
 }
 
 static void modify_sparrow_dsp_data(struct sparrow_dsp *dsp,
-                                    SparrowDspData *dspData) {
-  uint32_t reg = XIo_In32(REGISTER_ADDRESS(dsp, dspData->addr));
-  reg &= (~dspData->mask);
-  reg |= (dspData->data & dspData->mask);
-  XIo_Out32(REGISTER_ADDRESS(dsp, dspData->addr), reg);
+                                    SparrowDspInfo *dspInfo) {
+  uint32_t reg = XIo_In32(REGISTER_ADDRESS(dsp, dspInfo->addr));
+  reg &= (~dspInfo->mask);
+  reg |= (dspInfo->data & dspInfo->mask);
+  XIo_Out32(REGISTER_ADDRESS(dsp, dspInfo->addr), reg);
 }
 
 /* I/O control operations for the driver */
@@ -164,46 +164,46 @@ static int dsp_ioctl(struct inode *inode,
                      unsigned long arg) {
   // Switch on the request
   int returnValue = 0;
-  SparrowDspData dspData;
+  SparrowDspInfo dspInfo;
   struct sparrow_dsp *dsp = (struct sparrow_dsp *)filp->private_data;
 
   switch(command) {
-  case IOC_GET_SPARROW_DSP_DATA:
-    if(copy_from_user(&dspData, (void __user*)arg, sizeof(SparrowDspData)) != 0) {
+  case IOC_GET_SPARROW_DSP_REG:
+    if(copy_from_user(&dspInfo, (void __user*)arg, sizeof(SparrowDspInfo)) != 0) {
       return(-EFAULT);
     }
-    get_sparrow_dsp_data(dsp, &dspData);
-    if(copy_to_user((void __user*)arg, &dspData, sizeof(SparrowDspData)) != 0) {
+    get_sparrow_dsp_data(dsp, &dspInfo);
+    if(copy_to_user((void __user*)arg, &dspInfo, sizeof(SparrowDspInfo)) != 0) {
       return(-EFAULT);
     }
     break;
   
-  case IOC_SET_SPARROW_DSP_DATA:
-    if(copy_from_user(&dspData, (void __user*)arg, sizeof(SparrowDspData)) != 0) {
+  case IOC_SET_SPARROW_DSP_REG:
+    if(copy_from_user(&dspInfo, (void __user*)arg, sizeof(SparrowDspInfo)) != 0) {
       return(-EFAULT);
     }
-    set_sparrow_dsp_data(dsp, &dspData);
+    set_sparrow_dsp_data(dsp, &dspInfo);
     break;
 
-  case IOC_SET_SPARROW_DSP_DATA_BIT:
-    if(copy_from_user(&dspData, (void __user*)arg, sizeof(SparrowDspData)) != 0) {
+  case IOC_SET_SPARROW_DSP_REG_BIT:
+    if(copy_from_user(&dspInfo, (void __user*)arg, sizeof(SparrowDspInfo)) != 0) {
       return(-EFAULT);
     }
-    set_sparrow_dsp_data_bit(dsp, &dspData);
+    set_sparrow_dsp_data_bit(dsp, &dspInfo);
     break;
   
-  case IOC_CLEAR_SPARROW_DSP_DATA_BIT:
-    if(copy_from_user(&dspData, (void __user*)arg, sizeof(SparrowDspData)) != 0) {
+  case IOC_CLEAR_SPARROW_DSP_REG_BIT:
+    if(copy_from_user(&dspInfo, (void __user*)arg, sizeof(SparrowDspInfo)) != 0) {
       return(-EFAULT);
     }
-    clear_sparrow_dsp_data_bit(dsp, &dspData);
+    clear_sparrow_dsp_data_bit(dsp, &dspInfo);
     break;
   
-  case IOC_MODIFY_SPARROW_DSP_DATA:
-    if(copy_from_user(&dspData, (void __user*)arg, sizeof(SparrowDspData)) != 0) {
+  case IOC_MODIFY_SPARROW_DSP_REG:
+    if(copy_from_user(&dspInfo, (void __user*)arg, sizeof(SparrowDspInfo)) != 0) {
       return(-EFAULT);
     }
-    modify_sparrow_dsp_data(dsp, &dspData);
+    modify_sparrow_dsp_data(dsp, &dspInfo);
     break;
   
   default:
