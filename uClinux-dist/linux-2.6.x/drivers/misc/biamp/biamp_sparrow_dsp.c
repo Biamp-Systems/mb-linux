@@ -532,7 +532,10 @@ static int __init sparrow_dsp_driver_init(void)
   printk(KERN_INFO DRIVER_NAME ": Copyright(c) Biamp Systems\n");
 
 #ifdef CONFIG_OF
-  returnValue = of_register_platform_driver(&of_sparrow_dsp_driver);
+  if((returnValue = of_register_platform_driver(&of_sparrow_dsp_driver)) < 0) {
+    printk(KERN_INFO DRIVER_NAME ": Failed to register OF platform driver\n");
+    return(returnValue);
+  }
 #endif
 
   /* Initialize the instance counter */ 
