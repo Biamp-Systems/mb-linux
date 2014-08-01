@@ -43,7 +43,7 @@
 #include <linux/wait.h>
 #include <linux/netdevice.h>
 #include "labx_ethernet.h"
-
+#include "net/labx_ethernet/labx_ethernet_defs.h"
 /************************** Constant Definitions *****************************/
 
 /* "Blacklisted" LTF (Ethertype) for the driver.
@@ -122,6 +122,10 @@ int labx_eth_CfgInitialize(XLlTemac *InstancePtr,
 	InstancePtr->IsReady = XCOMPONENT_IS_READY;
 
 	labx_eth_Reset(InstancePtr, XTE_NORESET_HARD);
+
+	/* No addresses exlcuded from filter by default */
+	memset(InstancePtr->igmp_excl_range.low,0xFF,MAC_ADDRESS_BYTES);
+	memset(InstancePtr->igmp_excl_range.high,0xFF,MAC_ADDRESS_BYTES);
 
 	xdbg_printf(XDBG_DEBUG_GENERAL,
 		    "Temac_CfgInitialize: returning SUCCESS\n");
@@ -610,17 +614,46 @@ static void ConfigureMacFilter(XLlTemac *InstancePtr, int unitNum, const u8 mac[
 	select_matchers(InstancePtr, SELECT_NONE, 0);
 }
 
+/* Compares the two passed MAC addresses; returns less than zero if the first MAC
+ * address is less than the second, positive if the converse is true, and zero if
+ * they are equal.
+ */
+static int32_t compare_mac_addresses(const uint8_t *macAddressA, const uint8_t *macAddressB) {
+  uint32_t byteIndex;
+  int32_t comparisonResult = 0;
+
+  for(byteIndex = 0; byteIndex < MAC_ADDRESS_BYTES; byteIndex++) {
+    if(macAddressA[byteIndex] < macAddressB[byteIndex]) {
+      comparisonResult = -1;
+      break;
+    } else if(macAddressA[byteIndex] > macAddressB[byteIndex]) {
+      comparisonResult = 1;
+      break;
+    }
+  }
+  return(comparisonResult);
+}
+
+
+static u32 mcast_addr_excluded(u8 *addr, XLlTemac *InstancePtr) {
+	if ( (compare_mac_addresses(addr,InstancePtr->igmp_excl_range.low) < 0) ||
+	   (compare_mac_addresses(addr,InstancePtr->igmp_excl_range.high) > 0)) {
+			 return FALSE;
+		 }
+	return TRUE;
+}
+
 void labx_eth_UpdateMacFilters(XLlTemac *InstancePtr)
 {
 	int i;
 
-        /* Set up the VLAN filter register; by default, this will disable reception
-         * of any VLAN-tagged packets (any QoS priority), and will also "blacklist"
-         * 802.1AS packets.
-         *
-         * In the future, this capability should be exposed via ethtool.
-         */
-        labx_eth_WriteReg(InstancePtr->Config.BaseAddress, VLAN_LTF_MASK_REG,
+	/*Set up the VLAN filter register; by default, this will disable reception
+	* of any VLAN-tagged packets (any QoS priority), and will also "blacklist"
+	* 802.1AS packets.
+	*
+	* In the future, this capability should be exposed via ethtool.
+	*/
+	labx_eth_WriteReg(InstancePtr->Config.BaseAddress, VLAN_LTF_MASK_REG,
                           ((FILTER_LTF_PTP_V2 << LTF_VALUE_SHIFT) | LTF_FILTER_ACTIVE));
 
 	/* Always allow our unicast mac */
@@ -636,13 +669,14 @@ void labx_eth_UpdateMacFilters(XLlTemac *InstancePtr)
 	/* Allow multicasts if configured to do so */
 	if (InstancePtr->Options & XTE_MULTICAST_OPTION) {
 		struct dev_mc_list *dmi = InstancePtr->dev->mc_list;
-                int i;
-
-                for (i=2; (i<(InstancePtr->dev->mc_count+2)) && (i<InstancePtr->MacMatchUnits); i++) {
-			ConfigureMacFilter(InstancePtr, i, dmi->da_addr, MAC_MATCH_ALL);
-                        dmi = dmi->next;
-                }
-
+		i=2;
+		while (dmi && i < InstancePtr->MacMatchUnits) {
+			if (!mcast_addr_excluded(dmi->da_addr,InstancePtr)) {
+				ConfigureMacFilter(InstancePtr, i, dmi->da_addr, MAC_MATCH_ALL);
+				++i;
+			}
+			dmi = dmi->next;
+		}
 	} else {
 		/* Disable all multicast filters */
 		for (i=2; i<InstancePtr->MacMatchUnits; i++) {
@@ -1523,4 +1557,8 @@ void labx_eth_PhyWrite(XLlTemac *InstancePtr, u32 PhyAddress,
     if(InstancePtr->MdioState != MDIO_STATE_READY) {
       printk("MDIO write timeout!\n");
     }
+}
+
+u32 labx_eth_mcast_count_addr_included(struct net_device *dev,u32 mc_excl_count) {
+	return dev->mc_count-mc_excl_count;
 }

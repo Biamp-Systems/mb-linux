@@ -427,7 +427,7 @@ int32_t labx_dma_probe(struct labx_dma *dma,
   dma->capabilities.dmaChannels = (capsWord >> DMA_CAPS_CHANNELS_SHIFT) & DMA_CAPS_CHANNELS_MASK;
   dma->capabilities.parameterAddressBits = (capsWord >> DMA_CAPS_PARAM_ADDRESS_BITS_SHIFT) & DMA_CAPS_PARAM_ADDRESS_BITS_MASK;
   dma->capabilities.codeAddressBits = (capsWord >> DMA_CAPS_CODE_ADDRESS_BITS_SHIFT) & DMA_CAPS_CODE_ADDRESS_BITS_MASK;
-  dma->regionShift = (dma->capabilities.codeAddressBits + 2);
+  dma->regionShift = (max(8, dma->capabilities.codeAddressBits) + 2);
 
   /* Either infer the number of microcode words available from the code address bits,
    * or sanity check the specified amount against the same.

@@ -97,9 +97,27 @@
 #define PTP_LOCAL_SECONDS_LOW_REG   (0x00A)
 #define PTP_LOCAL_NANOSECONDS_REG   (0x00B)
 
+#define PTP_IP_CONFIG_REG (0x00C)
+#  define PTP_IP_LOAD_ACTIVE (0x80000000)
+#  define PTP_IP_LOAD_LAST   (0x40000000)
+#  define ID_SELECT_NONE  0x00000000
+#  define ID_SELECT_ALL   0x3FFFFFFF
+#define PTP_IP_REG (0x00D)
+
+#define NUM_SRLC16E_INSTANCES      16
+#  define NUM_SRLC16E_CONFIG_WORDS   (NUM_SRLC16E_INSTANCES / 2)
+#define SRLCXXE_CLEARING_WORD     0x00000000
+
+#  define PTP_MATCHER_DISABLE  0x00000000
+#  define PTP_MATCHER_ENABLE   0x00000001
+
+#define PTP_CAPS_REG  0x00E
+#  define PTP_PORT_WIDTH_MASK 0x0F
+#  define PTP_NUM_MATCH_UNITS_MASK  0xF0
+
 #define PTP_REVISION_REG   (0x0FF)
 #  define REVISION_FIELD_BITS  4
-#  define REVISION_FIELD_MASK  (0x0F)
+#  define REVISION_FIELD_MASK  0x0F
 
 #define REGISTER_ADDRESS(device, port, offset) \
   ((uintptr_t)device->virtualAddress | (port << PORT_RANGE_SHIFT) |      \
@@ -114,6 +132,11 @@
   ((uintptr_t)device->virtualAddress | (port << PORT_RANGE_SHIFT) |      \
    (RX_PACKET_RANGE << ADDRESS_RANGE_SHIFT) |                           \
    ((whichBuffer & PTP_RX_BUFFER_MASK) << PTP_PACKET_BUFFER_SHIFT))
+
+/* PTP message transport enumeration */
+#define MSG_TRANSPORT_MASK   (0xF0)
+#  define TRANSPORT_PTP        (0x10)
+#  define TRANSPORT_NOT_PTP    (0xFF)
 
 /* PTP message type enumeration */
 #define MSG_TYPE_MASK        (0x0F)
@@ -192,6 +215,7 @@
 #  define FLAG_UTC_OFF_VALID  (0x0004)
 #  define FLAG_LEAP_59        (0x0002)
 #  define FLAG_LEAP_61        (0x0001)
+#  define FLAG_NONE           (0x0000)
 
 /* Number of words comprising a hardware timestamp (transmit or receive) */
 #define HW_TIMESTAMP_WORDS  (3)
@@ -206,6 +230,7 @@
 #define CORRECTION_FIELD_OFFSET              ( 5 * BYTES_PER_WORD)
 #define SOURCE_PORT_ID_OFFSET                ( 8 * BYTES_PER_WORD)
 #define SEQUENCE_ID_OFFSET                   (11 * BYTES_PER_WORD)
+#define LOG_MSG_INTERVAL_OFFSET              (11 * BYTES_PER_WORD)
 #define TIMESTAMP_OFFSET                     (12 * BYTES_PER_WORD)
 #define UTC_OFFSET_OFFSET                    (14 * BYTES_PER_WORD)
 #define REQ_PORT_ID_OFFSET                   (14 * BYTES_PER_WORD)
@@ -214,7 +239,9 @@
 #define LINK_DELAY_INTERVAL_OFFSET           (17 * BYTES_PER_WORD)
 #define STEPS_REMOVED_OFFSET                 (18 * BYTES_PER_WORD)
 #define GM_TIME_BASE_INDICATOR_OFFSET        (18 * BYTES_PER_WORD)
+#define GM_PHASE_CHANGE_OFFSET               (18 * BYTES_PER_WORD)
 #define PATH_TRACE_OFFSET                    (20 * BYTES_PER_WORD)
+#define GM_FREQ_CHANGE_OFFSET                (21 * BYTES_PER_WORD)
 
 /* Port-width-specific offsets for timestamp words in the buffers;
  * the data alignment from the network side to the host interface
@@ -411,6 +438,7 @@ struct ptp_port {
   /* 802.1AS timeouts (10.6.3) */
   uint8_t syncReceiptTimeout;
   uint8_t announceReceiptTimeout;
+  uint32_t syncReceiptTimeoutTime;
 
   /* 802.1AS MD entity variables (11.2.12) */
   int8_t currentLogPdelayReqInterval;
@@ -436,6 +464,7 @@ struct ptp_port {
   /* AVnu_PTP-5 PICS */
   uint32_t pdelayResponses;
   uint32_t multiplePdelayResponses;
+  uint32_t multiplePdelayTimer;
 
   /* 802.1AS LinkDelaySyncIntervalSetting variables (11.2.17.1) */
   LinkDelaySyncIntervalSetting_State_t linkDelaySyncIntervalSetting_State;
@@ -480,7 +509,15 @@ struct ptp_port {
   /* Per port path trace data */
   uint32_t           pathTraceLength;               
   PtpClockIdentity   pathTrace[PTP_MAX_PATH_TRACE]; 
+
+  uint8_t ipv4Address[IPV4_ADDRESS_BYTES];
 };
+
+typedef struct {
+  int32_t  upper;
+  uint32_t middle;
+  uint32_t lower;
+} Integer96;
 
 /* Driver structure to maintain state for each device instance */
 #define NAME_MAX_SIZE  (256)
@@ -525,19 +562,25 @@ struct ptp_device {
   PtpClockIdentity   pathTrace[PTP_MAX_PATH_TRACE]; /* 10.3.8.21 */
 
   uint16_t lastGmTimeBaseIndicator;
+  Integer96 lastGmPhaseChange;
+  uint32_t lastGmFreqChange;
 
   /* RTC control loop constants */
   RtcIncrement    nominalIncrement;
   PtpCoefficients coefficients;
   uint32_t masterRateRatio;
   uint32_t masterRateRatioValid;
-  uint32_t prevRtcIncrement;
 
   /* RTC control loop persistent values */
   int64_t  integral;
+  int64_t  zeroCrossingIntegral;
   int32_t  derivative;
   int32_t  previousOffset;
+  uint32_t prevBaseRtcIncrement;
+  uint32_t prevAppliedRtcIncrement;
+  int32_t  rtcLastIncrementDelta;
   uint32_t rtcChangesAllowed;
+  uint32_t rtcReset;
   int32_t  rtcLastOffset;
   uint32_t rtcLastOffsetValid;
   uint32_t rtcLastLockState;
@@ -565,6 +608,7 @@ struct ptp_device {
   struct work_struct work_send_gm_change;
   struct work_struct work_send_rtc_change;
   struct work_struct work_send_heartbeat;
+  struct work_struct work_send_rtc_increment_change;
 
   /* Packet Rx state space */
 #ifndef CONFIG_LABX_PTP_NO_TASKLET
@@ -589,7 +633,21 @@ struct ptp_device {
 
   /* Number of timer ticks that have passed since the last time the tasklet ran */
   uint32_t timerTicks;
+
+  /* Generalized offset for different 1588 transports (Layer 2, IPv4, IPv6 etc) */
+  uint16_t packetOffset;
+
+  /* Number of IP filters in use */
+  uint32_t numIPFilters;
+
 };
+
+typedef struct {
+  uint32_t matchUnit;
+  uint32_t configAction;
+  uint64_t matchIdMask;
+  uint64_t matchId;
+} PtpMatcherConfig;
 
 /* Enumerated type identifying a packet buffer direction; outgoing or incoming, 
  * respectively.
@@ -604,6 +662,7 @@ typedef enum {
 /* From labx_ptp_messages.c */
 void init_tx_templates(struct ptp_device *ptp, uint32_t port);
 uint32_t get_message_type(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer);
+uint32_t get_transport_specific(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer);
 void get_rx_mac_address(struct ptp_device *ptp, uint32_t port, uint8_t * rxBuffer, uint8_t *macAddress);
 void get_source_port_id(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection, uint8_t *packetBuffer, uint8_t *sourcePortId);
 void set_source_port_id(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection, uint8_t *packetBuffer, uint8_t *sourcePortId);
@@ -624,8 +683,7 @@ void transmit_delay_response(struct ptp_device *ptp, uint32_t port, uint8_t * re
 void transmit_pdelay_request(struct ptp_device *ptp, uint32_t port);
 void transmit_pdelay_response(struct ptp_device *ptp, uint32_t port, uint8_t *requestRxBuffer);
 void transmit_pdelay_response_fup(struct ptp_device *ptp, uint32_t port);
-void print_packet_buffer(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
-                         uint8_t * packetBuffer, uint32_t packetWords);
+void print_packet_buffer(struct ptp_device *ptp, PacketDirection bufferDirection, uint8_t * packetBuffer, uint32_t packetWords);
 uint16_t get_sequence_id(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
                          uint8_t * packetBuffer);
 void get_hardware_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
@@ -635,8 +693,10 @@ void get_local_hardware_timestamp(struct ptp_device *ptp, uint32_t port, PacketD
 void get_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
                    uint8_t * packetBuffer, PtpTime *timestamp);
 void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t *txBuffer, PtpTime *correctionField);
-uint16_t get_gm_time_base_indicator_field(uint8_t *rxBuffer);
-uint32_t get_cumulative_scaled_rate_offset_field(uint8_t *rxBuffer);
+uint16_t get_gm_time_base_indicator_field(struct ptp_device *ptp, uint8_t *rxBuffer);
+void get_gm_phase_change_field(struct ptp_device *ptp, uint8_t *rxBuffer, Integer96 *lastGmPhaseChange);
+uint16_t get_gm_freq_change_field(struct ptp_device *ptp, uint8_t *rxBuffer);
+uint32_t get_cumulative_scaled_rate_offset_field(struct ptp_device *ptp, uint8_t *rxBuffer);
 uint16_t get_port_number(const uint8_t *portNumber);
 void set_port_number(uint8_t *portNumber, uint16_t setValue);
 uint16_t get_steps_removed(const uint8_t *stepsRemoved);
@@ -684,9 +744,11 @@ void unregister_ptp_netlink(void);
 int ptp_events_tx_heartbeat(struct ptp_device *ptp);
 int ptp_events_tx_gm_change(struct ptp_device *ptp);
 int ptp_events_tx_rtc_change(struct ptp_device *ptp);
+int ptp_events_tx_rtc_increment_change(struct ptp_device *ptp);
 void ptp_work_send_heartbeat(struct work_struct *work);
 void ptp_work_send_gm_change(struct work_struct *work);
 void ptp_work_send_rtc_change(struct work_struct *work);
+void ptp_work_send_rtc_increment_change(struct work_struct *work);
 
 /* From Platform Specific Files */
 void ptp_disable_irqs(struct ptp_device *ptp, int port);
@@ -701,11 +763,47 @@ uint8_t * get_output_buffer(struct ptp_device *ptp,uint32_t port,uint32_t bufTyp
 void write_packet(uint8_t *bufferBase, uint32_t *wordOffset, uint32_t writeWord);
 uint32_t read_packet(uint8_t * bufferBase, uint32_t *wordOffset);
 void transmit_packet(struct ptp_device *ptp, uint32_t port, uint8_t * txBuffer);
+void ptp_set_ip_filter(struct ptp_device *ptp, uint32_t port, const uint8_t *ipAddr, uint16_t destPort, uint32_t matchUnit);
+void ptp_clear_all_matchers(struct ptp_device *ptp, uint32_t port);
+uint32_t ptp_get_num_ip_filters(struct ptp_device *ptp);
+uint16_t get_ethertype(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer);
 
+extern const uint8_t ipv4PrimaryMCastAddress[];
+extern const uint8_t ipv4PDelayMCastAddress[];
 
 /* Bytes in a buffer word */
-#define BYTES_PER_WORD  (4)
-#define PTP_ETHERTYPE        (0x88F7u)
+#define BYTES_PER_WORD        (4)
+#define PTP_ETHERTYPE         (0x88F7u)
+#define ETHERTYPE_OFFSET      (12)
+
+/* IPV4 defines */
+#define IPV4_ETHERTYPE        (0x0800u)
+#define IPV4_VERSION          (4)
+#define IPV4_IHL              (5)
+#define IPV4_DSCP_MASK        (0x3F)
+#define IPV4_DSCP_DEFAULT     (0x00)
+#define IPV4_ECN              (0)
+#define IPV4_ID               (0000)
+#define IPV4_FLAGS            (0x02)
+#define IPV4_FRAGMENT_OFFSET  (0x0000)
+#define IPV4_TTL              (0xFF)
+#define IPV4_PROTOCOL         (0x11)
+
+/* Offsets from the start of the packet (including 4 byte packet size prefix */
+#define IPV4_QUADLET4_OFFSET  (12)
+#define IPV4_QUADLET5_OFFSET  (16)
+#define IPV4_QUADLET7_OFFSET  (24)
+#define IPV4_QUADLET8_OFFSET  (28)
+#define IPV4_QUADLET9_OFFSET  (32)
+#define IPV4_QUADLET10_OFFSET (36)
+#define IPV4_HEADER_BYTES     (20)
+
+/* UDP/IPV4 defines */
+#define IPV4_UDP_HEADER_BYTES    (8)
+#define IPV4_UDP_EVENT_DST_PORT  (319)
+#define IPV4_UDP_MCAST_MSG_PORT  (320)
+#define IPV4_UDP_UCAST_MSG_PORT  (320)
+
 
 #ifndef TRUE
 #define TRUE 1

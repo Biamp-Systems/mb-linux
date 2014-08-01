@@ -78,6 +78,10 @@ typedef enum {
   REPLACE_PRESENT_MASTER
 } BmcaResult;
 
+
+
+#define AS_CAPABLE(ptp, pPort) (pPort->asCapable || (ptp->properties.profile != PTP_AS_Profile))
+
 static BmcaResult bmca_comparison(PtpPriorityVector* presentMaster, PtpPriorityVector* challenger) {
 
   int32_t comparison = memcmp(presentMaster, challenger, sizeof(PtpPriorityVector));
@@ -119,7 +123,7 @@ int8_t qualifyAnnounce(struct ptp_device *ptp, uint32_t port) {
 
   BMCA_DBG_2("QA: SR %d\n", stepsRemoved);
 
-  if (stepsRemoved > 255) {
+  if (stepsRemoved >= 255) {
     return FALSE;
   }
 
@@ -160,8 +164,8 @@ void PortAnnounceReceive_StateMachine(struct ptp_device *ptp, uint32_t port)
 {
   struct ptp_port *pPort = &ptp->ports[port];
 
-  if (!pPort->portEnabled || !pPort->pttPortEnabled || !pPort->asCapable) {
-    BMCA_DBG_2("PAR: rejected %d %d %d (port %d)\n", pPort->portEnabled, pPort->pttPortEnabled, pPort->asCapable, port);
+  if (!pPort->portEnabled || !pPort->pttPortEnabled || !AS_CAPABLE(ptp,pPort)) {
+    BMCA_DBG_2("PAR: rejected %d %d %d (port %d)\n", pPort->portEnabled, pPort->pttPortEnabled, AS_CAPABLE(ptp, pPort), port);
     pPort->rcvdMsg = FALSE;
   } else {
     pPort->rcvdMsg = qualifyAnnounce(ptp, port);
@@ -207,6 +211,7 @@ static void PortAnnounceInformation_StateMachine_SetState(struct ptp_device *ptp
       pPort->infoIs                 = InfoIs_Disabled;
       pPort->reselect               = TRUE;
       pPort->selected               = FALSE;
+      pPort->syncReceiptTimeoutTime = 0xffffffff;
       memset(&pPort->portPriority, 0xFF, sizeof(PtpPriorityVector));
       break;
 
@@ -222,6 +227,7 @@ static void PortAnnounceInformation_StateMachine_SetState(struct ptp_device *ptp
       pPort->updtInfo         = FALSE;
       pPort->infoIs           = InfoIs_Mine;
       pPort->newInfo          = TRUE;
+      pPort->syncReceiptTimeoutTime = 0xffffffff;
       break;
 
     case PortAnnounceInformation_SUPERIOR_MASTER_PORT:
@@ -263,7 +269,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
   {
     prevState = pPort->portAnnounceInformation_State;
 
-    if (!pPort->portEnabled || !pPort->pttPortEnabled || !pPort->asCapable)
+    if (!pPort->portEnabled || !pPort->pttPortEnabled || !AS_CAPABLE(ptp, pPort)) 
     {
       if (pPort->portAnnounceInformation_State != PortAnnounceInformation_DISABLED)
       {
@@ -281,7 +287,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
           break;
 
         case PortAnnounceInformation_DISABLED:
-          if (pPort->portEnabled && pPort->pttPortEnabled && pPort->asCapable) {
+          if (pPort->portEnabled && pPort->pttPortEnabled && AS_CAPABLE(ptp, pPort)) {
             PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_AGED);
           } else if (ptp->ports[port].rcvdMsg) {
             PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_DISABLED);
@@ -307,8 +313,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
           } else if (pPort->rcvdMsg && !pPort->updtInfo) {
             PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_RECEIVE);
           } else {
-            // TODO: Sync * 2 is a workaround for Titanium. Remove when Titanium stops dropping sync
-            int syncTimeout = (pPort->syncTimeoutCounter >= SYNC_INTERVAL_TICKS(ptp, port) * pPort->syncReceiptTimeout * 2);
+            int syncTimeout = (pPort->syncTimeoutCounter >= pPort->syncReceiptTimeoutTime);
             int announceTimeout = (pPort->announceTimeoutCounter >= ANNOUNCE_INTERVAL_TICKS(ptp, port) * pPort->announceReceiptTimeout);
             if ((pPort->infoIs == InfoIs_Received) &&
                 (announceTimeout || (syncTimeout && ptp->gmPresent)) &&
@@ -316,7 +321,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
 
               BMCA_DBG("Announce AGED: (announce %d >= %d || sync %d >= %d)\n",
                 pPort->announceTimeoutCounter, ANNOUNCE_INTERVAL_TICKS(ptp, port) * pPort->announceReceiptTimeout,
-                pPort->syncTimeoutCounter, SYNC_INTERVAL_TICKS(ptp, port) * pPort->syncReceiptTimeout * 2);
+                pPort->syncTimeoutCounter, pPort->syncReceiptTimeoutTime);
 
               PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_AGED);
 
@@ -413,9 +418,7 @@ static void updtRolesTree(struct ptp_device *ptp)
   /* Compute masterPriority vectors and assign port roles*/
   for (i = 0; i<ptp->numPorts; i++) {
     struct ptp_port *pPort = &ptp->ports[i];
-#if BMCA_DEBUG
     uint32_t prevRole = pPort->selectedRole;
-#endif
 
     /* masterPriority */
     memcpy(&pPort->masterPriority, ptp->gmPriority, sizeof(PtpPriorityVector));
@@ -463,6 +466,23 @@ static void updtRolesTree(struct ptp_device *ptp)
         }
     }
 
+
+    /* Update GM fields when transitioning to PTP_MASTER */
+    if(prevRole != PTP_MASTER && pPort->selectedRole == PTP_MASTER) {
+      ptp->lastGmTimeBaseIndicator++; 
+      ptp->lastGmPhaseChange.upper = 0;
+      ptp->lastGmPhaseChange.middle = 0;
+      ptp->lastGmPhaseChange.lower = 0;
+      if(ptp->masterRateRatioValid) {
+        uint64_t result = (ptp->nominalIncrement.mantissa << RTC_MANTISSA_SHIFT) | (ptp->nominalIncrement.fraction & RTC_FRACTION_MASK);
+        result = result << 33;
+        result = result / ptp->masterRateRatio;
+        result = result - (1ull << 32);
+        ptp->lastGmFreqChange = (uint32_t)(result >> 9);
+      } else {
+        ptp->lastGmFreqChange = 0;
+      }
+    }
 #if BMCA_DEBUG
     if (pPort->selectedRole != prevRole) {
       printk("Port %d Role changed %s => %s\n", i, roleString(prevRole), roleString(pPort->selectedRole));
@@ -524,6 +544,13 @@ static void setSelectedTree(struct ptp_device *ptp)
 void PortRoleSelection_StateMachine(struct ptp_device *ptp)
 {
   uint32_t i;
+
+#if 0
+  // TODO: Turn off for now, this got packets flowing
+  if(ptp->properties.delayMechanism == PTP_DELAY_MECHANISM_E2E) {
+    return;
+  }
+#endif
 
   PortRoleSelection_State_t prevState;
   do

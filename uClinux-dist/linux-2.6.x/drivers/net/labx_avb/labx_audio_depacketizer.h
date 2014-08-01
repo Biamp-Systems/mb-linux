@@ -65,10 +65,12 @@
 #define ERROR_REG            (0x007)
 #define IRQ_MASK_REG         (0x008)
 #define IRQ_FLAGS_REG        (0x009)
-#  define NO_IRQS       (0x00000000)
-#  define SYNC_IRQ      (0x00000001)
-#  define STREAM_IRQ    (0x00000002)
-#  define SEQ_ERROR_IRQ (0x00000004)
+#  define NO_IRQS         (0x00000000)
+#  define SYNC_IRQ        (0x00000001)
+#  define STREAM_IRQ      (0x00000002)
+#  define SEQ_ERROR_IRQ   (0x00000004)
+#  define MATCH_ERROR_IRQ (0x00000008)
+#  define DBS_ERROR_IRQ   (0x00000010)
 
 #define SYNC_REG             (0x00A)
 #  define CANCEL_SYNC      (0x00000000)
@@ -121,6 +123,10 @@
 
 #define MC_SYT_INTERVAL_REG  0x001
 #define MC_CONTROL_REG       0x002
+#  define MC_CONTROL_HAS_COAST_HOST_RTC  0x80000000
+#  define MC_CONTROL_IS_COASTING         0x40000000
+#  define MC_CONTROL_TIMEBASE_SHIFT      5
+#  define MC_CONTROL_FORCE_COASTING      0x00000010
 #  define MC_CONTROL_SYNC_EXTERNAL       0x00000008
 #  define MC_CONTROL_SYNC_INTERNAL       0x00000000
 #  define MC_CONTROL_SAMPLE_EDGE_RISING  0x00000001
@@ -129,6 +135,7 @@
 #define MC_HALF_PERIOD_REG   0x003
 #define MC_REMAINDER_REG     0x004
 #define MC_RTC_INCREMENT_REG 0x005
+#  define MC_RTC_INCREMENT_FORCE 0x80000000
 
 #define DAC_OFFSET_REG       0x008
 #  define DAC_OFFSET_ZERO  0x00000000
@@ -250,6 +257,8 @@ struct audio_depacketizer {
   uint32_t streamStatusGeneration;
   uint32_t streamSeqError;
   uint32_t errorIndex;
+  uint32_t streamDBSError;
+  uint32_t dbsErrorIndex;
   uint32_t netlinkSequence;
   struct task_struct *netlinkTask;
   struct depacketizer_presentation_channels *presentationChannels[MAX_CONCURRENT_STREAMS];

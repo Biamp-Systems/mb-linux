@@ -130,8 +130,14 @@ void ptp_enable_irqs(struct ptp_device *ptp, int port)
 
 uint32_t ptp_get_version(struct ptp_device *ptp)
 {
-    return(ioread32(REGISTER_ADDRESS(ptp, 0, PTP_REVISION_REG)));
+    return ioread32(REGISTER_ADDRESS(ptp, 0, PTP_REVISION_REG));
 }
+
+uint32_t ptp_get_num_ip_filters(struct ptp_device *ptp)
+{
+    return(ioread32(REGISTER_ADDRESS(ptp, 0, PTP_CAPS_REG)) & PTP_NUM_MATCH_UNITS_MASK) >> 4;
+}
+
 
 /* Configure the prescaler and divider used to generate a 10 msec event timer.
  * The register values are terminal counts, so are one less than the count value.
@@ -159,6 +165,9 @@ uint32_t ptp_setup_interrupt(struct ptp_device *ptp)
  */
 void write_packet(uint8_t * bufferBase, uint32_t *wordOffset, 
                          uint32_t writeWord) {
+
+/*  printk("bufferBase: %08x, wordOffset: %d, writeWord: %08x\n",bufferBase,*wordOffset,writeWord); */
+
   iowrite32(writeWord, ((uint32_t)bufferBase + *wordOffset));
   *wordOffset += BYTES_PER_WORD;
 }
@@ -310,6 +319,8 @@ void set_rtc_increment(struct ptp_device *ptp, RtcIncrement *increment) {
 
   /* The actual write is already atomic, so no need to ensure mutual exclusion */
   iowrite32(incrementWord, REGISTER_ADDRESS(ptp, 0, PTP_RTC_INC_REG));
+
+  ptp_events_tx_rtc_increment_change(ptp);
 }
 
 /* Return the current increment value */
@@ -388,4 +399,207 @@ void set_rtc_time(struct ptp_device *ptp, PtpTime *time) {
   spin_unlock_irqrestore(&ptp->mutex, flags);
   preempt_enable();
 }
+
+/* Busy loops until the match unit configuration logic is idle.  The hardware goes 
+ * idle very quickly and deterministically after a configuration word is written, 
+ * so this should not consume very much time at all.
+ */
+static void wait_match_config(struct ptp_device *ptp, uint32_t port) {
+  uint32_t statusWord;
+  uint32_t timeout = 10000;
+  do {
+    statusWord = ioread32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+    if (timeout-- == 0)
+    {
+      printk("ptp: wait_match_config timeout!\n");
+      break;
+    }
+  } while(statusWord & PTP_IP_LOAD_ACTIVE);
+}
+
+/* Selects a set of match units for subsequent configuration loads */
+typedef enum { SELECT_NONE, SELECT_SINGLE, SELECT_ALL } SelectionMode;
+static void select_matchers(struct ptp_device *ptp,
+                            uint32_t port,
+                            SelectionMode selectionMode,
+                            uint32_t matchUnit) {
+  uint32_t selectionWord;
+
+  switch(selectionMode) {
+  case SELECT_NONE:
+    /* De-select all the match units */
+    iowrite32(ID_SELECT_NONE, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+    break;
+
+  case SELECT_SINGLE:
+    /* Select a single unit */
+    selectionWord = ((matchUnit < 32) ? (0x01 << matchUnit) : ID_SELECT_NONE);
+    iowrite32(selectionWord, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+    break;
+
+  default:
+    /* Select all match units at once */
+    iowrite32(ID_SELECT_ALL, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+  }
+}
+
+/* Sets the loading mode for any selected match units.  This revolves around
+ * automatically disabling the match units' outputs while they're being
+ * configured so they don't fire false matches, and re-enabling them as their
+ * last configuration word is loaded.
+ */
+typedef enum { LOADING_MORE_WORDS, LOADING_LAST_WORD } LoadingMode;
+static void set_matcher_loading_mode(struct ptp_device *ptp,
+                                     uint32_t port,
+                                     LoadingMode loadingMode) {
+  uint32_t controlWord = ioread32(REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+
+  if(loadingMode == LOADING_MORE_WORDS) {
+    /* Clear the "last word" bit to suppress false matches while the units are
+     * only partially cleared out
+     */
+    controlWord &= ~PTP_IP_LOAD_LAST;
+  } else {
+    /* Loading the final word, flag the match unit(s) to enable after the
+     * next configuration word is loaded.
+     */
+    controlWord |= PTP_IP_LOAD_LAST;
+  }
+  iowrite32(controlWord, REGISTER_ADDRESS(ptp, port, PTP_IP_CONFIG_REG));
+}
+
+/* Clears any selected match units, preventing them from matching any packets */
+static void clear_selected_matchers(struct ptp_device *ptp, uint32_t port) {
+  uint32_t numClearWords;
+  uint32_t wordIndex;
+
+  /* Ensure the unit(s) disable as the first word is load to prevent erronous
+   * matches as the units become partially-cleared
+   */
+  set_matcher_loading_mode(ptp, port, LOADING_MORE_WORDS);
+  numClearWords = NUM_SRLC16E_CONFIG_WORDS;
+
+  for(wordIndex = 0; wordIndex < numClearWords; wordIndex++) {
+    /* Assert the "last word" flag on the last word required to complete the clearing
+     * of the selected unit(s).
+     */
+    if(wordIndex == (numClearWords - 1)) {
+      set_matcher_loading_mode(ptp, port, LOADING_LAST_WORD);
+    }
+    iowrite32(SRLCXXE_CLEARING_WORD, REGISTER_ADDRESS(ptp, port, PTP_IP_REG));
+  }
+}
+
+/* Clears all of the match units within the passed instance */
+void ptp_clear_all_matchers(struct ptp_device *ptp, uint32_t port) {
+  /* Ascertain that the configuration logic is ready, then clear all in one shot */
+  wait_match_config(ptp, port);
+  select_matchers(ptp, port, SELECT_ALL, 0);
+  clear_selected_matchers(ptp, port);
+  select_matchers(ptp, port, SELECT_NONE, 0);
+}
+
+/* Loads truth tables into a match unit using the newest, "unified" match
+ * architecture.  This is SRL16E based (not cascaded) due to the efficient
+ * packing of these primitives into Xilinx LUT6-based architectures.
+ */
+static void load_unified_matcher(struct ptp_device *ptp,
+                                 uint32_t port,
+                                 uint64_t matchId, 
+                                 uint64_t matchIdMask) {
+  int32_t wordIndex;
+  int32_t lutIndex;
+  uint32_t configWord = 0x00000000;
+  uint32_t matchChunk;
+  uint32_t matchChunkMask;
+  
+  /* In this architecture, all of the SRL16Es are loaded in parallel, with each
+   * configuration word supplying two bits to each.  Only one of the two bits can
+   * ever be set, so there is just an explicit check for one.
+   */
+  for(wordIndex = (NUM_SRLC16E_CONFIG_WORDS - 1); wordIndex >= 0; wordIndex--) {
+    for(lutIndex = (NUM_SRLC16E_INSTANCES - 1); lutIndex >= 0; lutIndex--) {
+      matchChunk = ((matchId >> (lutIndex << 2)) & 0x0F);
+      matchChunkMask = ((matchIdMask >> (lutIndex << 2)) & 0x0F);
+      configWord <<= 2;
+      if((matchChunk & matchChunkMask) == ((wordIndex << 1) & matchChunkMask)) configWord |= 0x01;
+      if((matchChunk & matchChunkMask) == (((wordIndex << 1) + 1) & matchChunkMask)) configWord |= 0x02;
+    }
+
+    /* Two bits of truth table have been determined for each SRL16E, load the
+     * word and wait for the configuration to occur.  Be sure to flag the last
+     * word to automatically re-enable the match unit(s) as the last word completes.
+     */
+    if(wordIndex == 0) set_matcher_loading_mode(ptp, port, LOADING_LAST_WORD);
+    iowrite32(configWord, REGISTER_ADDRESS(ptp, port, PTP_IP_REG));
+    wait_match_config(ptp, port);
+  }
+}
+
+/* Configures one of the passed instance's match units */
+int32_t ptp_configure_matcher(struct ptp_device *ptp, uint32_t port,
+                                 PtpMatcherConfig *matcherConfig) {
+  int32_t returnValue = 0;
+
+  /* Sanity-check the input structure */
+  if(matcherConfig->matchUnit >= ptp->numIPFilters) return(-EINVAL);
+
+  /* If we are activating the match unit, we must first ensure that the match unit
+   * is disabled, then update the matcher's entry in the vector table
+   */
+  switch(matcherConfig->configAction) {
+  case PTP_MATCHER_ENABLE:
+    /* Ascertain that the configuration logic is ready, then select the matcher */
+    wait_match_config(ptp,port);
+    select_matchers(ptp, port, SELECT_SINGLE, matcherConfig->matchUnit);
+
+    /* First clear the match unit to disable any old configuration */
+    clear_selected_matchers(ptp, port);
+
+    /* Don't activate the match unit if there was a problem with the vector load */
+    if(returnValue == 0) {
+      /* Set the loading mode to disable as we load the first word */
+      set_matcher_loading_mode(ptp, port, LOADING_MORE_WORDS);
+      
+      /* Calculate matching truth tables for the LUTs and load them */
+      load_unified_matcher(ptp, port, matcherConfig->matchId, matcherConfig->matchIdMask);
+    } /* if(vector relocation okay) */
+
+    /* De-select the match unit */
+    select_matchers(ptp, port, SELECT_NONE, 0);
+    break;
+
+  case PTP_MATCHER_DISABLE:
+    /* Deactivate the match unit.  Ascertain that the configuration logic is ready, 
+     * then select the matcher and clear it
+     */
+    wait_match_config(ptp, port);
+    select_matchers(ptp, port, SELECT_SINGLE, matcherConfig->matchUnit);
+    clear_selected_matchers(ptp, port);
+    select_matchers(ptp, port, SELECT_NONE, 0);
+    break;
+
+  default:
+    /* Bad parameter */
+    returnValue = -EINVAL;
+  }
+
+  return(returnValue);
+}
+
+void ptp_set_ip_filter(struct ptp_device *ptp, uint32_t port, const uint8_t *ipAddr, uint16_t destPort, uint32_t matchUnit) {
+  PtpMatcherConfig matcherConfig = {};
+  uint32_t byteIndex=0;
+
+  matcherConfig.matchUnit = matchUnit;
+  for(byteIndex = 0; byteIndex < IPV4_ADDRESS_BYTES; byteIndex++) {
+    matcherConfig.matchId |= 
+      (((uint64_t) ipAddr[byteIndex]) << ((8 - byteIndex - 1) * 8));
+  }
+  matcherConfig.matchId |= destPort;
+  matcherConfig.matchIdMask = 0xFFFFFFFF0000FFFFllu;
+  matcherConfig.configAction = PTP_MATCHER_ENABLE;
+  ptp_configure_matcher(ptp,port,&matcherConfig);
+}
+ 
 

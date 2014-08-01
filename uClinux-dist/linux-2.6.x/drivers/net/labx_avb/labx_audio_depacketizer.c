@@ -111,26 +111,26 @@ static void enable_depacketizer(struct audio_depacketizer *depacketizer) {
 }
 
 /* Flags the RTC as stable for the passed instance */
-static void set_rtc_stable(struct audio_depacketizer *depacketizer) {
+static void set_rtc_stable(struct audio_depacketizer *depacketizer, uint32_t timebaseIndex) {
   uint32_t ctrlStatusReg;
 
-  DBG("Declaring RTC stable\n");
+  DBG("Declaring RTC %d stable\n", timebaesIndex);
 
   /* Set the "RTC unstable" bit, which will coast any recovered media clock domains */
   ctrlStatusReg = XIo_In32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG));
-  ctrlStatusReg &= ~RTC_UNSTABLE;
+  ctrlStatusReg &= ~(RTC_UNSTABLE << timebaseIndex);
   XIo_Out32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG), ctrlStatusReg);
 }
 
 /* Flags the RTC as stable for the passed instance */
-static void set_rtc_unstable(struct audio_depacketizer *depacketizer) {
+static void set_rtc_unstable(struct audio_depacketizer *depacketizer, uint32_t timebaseIndex) {
   uint32_t ctrlStatusReg;
 
-  DBG("Declaring RTC unstable\n");
+  DBG("Declaring RTC %d unstable\n", timebaseIndex);
 
   /* Set the "RTC unstable" bit, which will coast any recovered media clock domains */
   ctrlStatusReg = XIo_In32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG));
-  ctrlStatusReg |= RTC_UNSTABLE;
+  ctrlStatusReg |= (RTC_UNSTABLE << timebaseIndex);
   XIo_Out32(REGISTER_ADDRESS(depacketizer, CONTROL_STATUS_REG), ctrlStatusReg);
 }
 
@@ -625,6 +625,8 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
                    MC_CONTROL_SAMPLE_EDGE_RISING : MC_CONTROL_SAMPLE_EDGE_FALLING;
   controlValue |= (clockDomainSettings->enabled == DOMAIN_SYNC) ?
                    MC_CONTROL_SYNC_EXTERNAL : MC_CONTROL_SYNC_INTERNAL;
+  controlValue |= (clockDomainSettings->enabled == DOMAIN_COASTING) ? MC_CONTROL_FORCE_COASTING : 0;
+  controlValue |= (clockDomainSettings->ptpDomainIndex << MC_CONTROL_TIMEBASE_SHIFT);
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_CONTROL_REG),
             controlValue);
 
@@ -670,7 +672,7 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
       (depacketizer->capabilities.versionMinor >= 6)) {
 
     XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_RTC_INCREMENT_REG),
-              0x40000000); /* TODO - Where should we get the nominal increment from? */
+              0x40000000 | MC_RTC_INCREMENT_FORCE); /* TODO - Where should we get the nominal increment from? */
     XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_REMAINDER_REG),
               clockDomainSettings->remainder);
     XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, MC_HALF_PERIOD_REG),
@@ -692,8 +694,7 @@ static void configure_clock_recovery(struct audio_depacketizer *depacketizer,
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, DAC_OFFSET_REG),
             DAC_OFFSET_ZERO);
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, DAC_P_COEFF_REG),
-            (((clockDomainSettings->enabled == DOMAIN_ENABLED) ||
-	      (clockDomainSettings->enabled == DOMAIN_SYNC)) 
+            ((clockDomainSettings->enabled != DOMAIN_DISABLED)
 	     ? DAC_COEFF_MAX : DAC_COEFF_ZERO));
   XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, clockDomain, LOCK_COUNT_REG),
             ((512 << VCO_LOCK_COUNT_SHIFT) | (8 << VCO_UNLOCK_COUNT_SHIFT)));
@@ -717,7 +718,8 @@ static void get_stream_status(struct audio_depacketizer *depacketizer,
 static void reset_depacketizer(struct audio_depacketizer *depacketizer) {
   /* Disable the instance and all of its match units */
   disable_depacketizer(depacketizer);
-  set_rtc_unstable(depacketizer);
+  set_rtc_unstable(depacketizer, 0);
+  set_rtc_unstable(depacketizer, 1); // TODO: Loop through all configured timebases (for now this supports 2)
   clear_all_matchers(depacketizer);
   set_vector_base_address(depacketizer, 0x00000000);
 }
@@ -749,21 +751,27 @@ static irqreturn_t labx_audio_depacketizer_interrupt(int irq, void *dev_id) {
   /* Detect the stream change and stream reset IRQs; either one should
    * simply trigger the netlink thread.
    */
-  if((maskedFlags & (STREAM_IRQ | SEQ_ERROR_IRQ)) != 0) {
+  if((maskedFlags & (STREAM_IRQ | SEQ_ERROR_IRQ | DBS_ERROR_IRQ)) != 0) {
     /* Increment the status count */
     depacketizer->streamStatusGeneration++;
 
     /* If this was a sequence error IRQ, leave a flag in place */
     if((maskedFlags & SEQ_ERROR_IRQ) != 0) {
       depacketizer->streamSeqError = 1;
-      depacketizer->errorIndex = seqError;
+      depacketizer->errorIndex = seqError & 0xFFFF;
     }
 
-    /* Disarm both event interrupts while the status thread handles the present
+    /* If this was a DBS error IRQ, leave a flag in place */
+    if((maskedFlags & DBS_ERROR_IRQ) != 0) {
+      depacketizer->streamDBSError = 1;
+      depacketizer->dbsErrorIndex = (seqError >> 16) & 0xFFFF;
+    }
+
+    /* Disarm event interrupts while the status thread handles the present
      * event(s).  This permits the status thread to limit the rate at which events
      * are accepted and propagated up to userspace.
      */
-    irqMask &= ~(STREAM_IRQ | SEQ_ERROR_IRQ);
+    irqMask &= ~(STREAM_IRQ | SEQ_ERROR_IRQ | DBS_ERROR_IRQ);
     XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), irqMask);
 
     /* Wake up all threads waiting for a stream status event */
@@ -780,12 +788,14 @@ static int netlink_thread(void *data)
   struct audio_depacketizer *depacketizer = (struct audio_depacketizer*)data;
   uint32_t streamStatusGeneration = depacketizer->streamStatusGeneration;
   uint32_t irqMask;
+#ifdef SOFTWARE_MUTE_ENABLED
   unsigned int channelIndex;
   unsigned int statusWordIndex;
   static const unsigned int statusWordOffset[STREAM_STATUS_WORDS] =
       {STREAM_STATUS_0_REG, STREAM_STATUS_1_REG, STREAM_STATUS_2_REG, STREAM_STATUS_3_REG};
   uint32_t streamStatus;
   uint32_t statusWordMask;
+#endif
   uint32_t lastStreamStatus[STREAM_STATUS_WORDS];
 
   __set_current_state(TASK_RUNNING);
@@ -854,7 +864,7 @@ static int netlink_thread(void *data)
      */
     msleep(EVENT_THROTTLE_MSECS);
     irqMask = XIo_In32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG));
-    irqMask |= (STREAM_IRQ | SEQ_ERROR_IRQ);
+    irqMask |= (STREAM_IRQ | SEQ_ERROR_IRQ | DBS_ERROR_IRQ);
     XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), irqMask);
   } while (!kthread_should_stop());
 
@@ -1072,11 +1082,39 @@ static int audio_depacketizer_ioctl(struct inode *inode, struct file *filp,
     break;
       
   case IOC_SET_RTC_STABLE:
-    set_rtc_stable(depacketizer);
+    {
+      uint32_t timebaseIndex;
+
+      if(copy_from_user(&timebaseIndex, (void __user*)arg, sizeof(timebaseIndex)) != 0) {
+        return(-EFAULT);
+      }
+
+      set_rtc_stable(depacketizer, timebaseIndex);
+    }
     break;
 
   case IOC_SET_RTC_UNSTABLE:
-    set_rtc_unstable(depacketizer);
+    {
+      uint32_t timebaseIndex;
+
+      if(copy_from_user(&timebaseIndex, (void __user*)arg, sizeof(timebaseIndex)) != 0) {
+        return(-EFAULT);
+      }
+
+      set_rtc_unstable(depacketizer, timebaseIndex);
+    }
+    break;
+
+  case IOC_SET_MCR_RTC_INCREMENT:
+    {
+      ClockDomainIncrement cdi;
+
+      if(copy_from_user(&cdi, (void __user*)arg, sizeof(cdi)) != 0) {
+        return(-EFAULT);
+      }
+
+      XIo_Out32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, cdi.clockDomain, MC_RTC_INCREMENT_REG), cdi.increment);
+    }
     break;
 
   case IOC_SET_AUTOMUTE_STREAM:
@@ -1149,7 +1187,8 @@ static int audio_depacketizer_probe(const char *name,
                                     struct platform_device *pdev,
                                     struct resource *addressRange,
                                     struct resource *irq,
-                                    const char *interfaceType) {
+                                    const char *interfaceType,
+                                    int is_mcr_host) {
   struct audio_depacketizer *depacketizer;
   uint32_t capsWord;
   uint32_t versionWord;
@@ -1278,6 +1317,14 @@ static int audio_depacketizer_probe(const char *name,
     depacketizer->capabilities.maxStreamSlots = (capsWord & MAX_STREAM_SLOTS_MASK);
   }
 
+  if (is_mcr_host) {
+    depacketizer->capabilities.coastHostRtcIncrement =
+      (XIo_In32(CLOCK_DOMAIN_REGISTER_ADDRESS(depacketizer, 0, MC_CONTROL_REG))
+       & MC_CONTROL_HAS_COAST_HOST_RTC) ? 1 : 0;
+  } else {
+    depacketizer->capabilities.coastHostRtcIncrement = 0;
+  }
+
   /* Announce the device */
   printk(KERN_INFO "%s: Found Lab X depacketizer %d.%d at 0x%08X, ",
          depacketizer->name, versionMajor, versionMinor, 
@@ -1372,8 +1419,10 @@ static int audio_depacketizer_probe(const char *name,
   depacketizer->streamStatusGeneration = 0;
   depacketizer->streamSeqError         = 0;
   depacketizer->errorIndex             = 0;
+  depacketizer->streamDBSError         = 0;
+  depacketizer->dbsErrorIndex          = 0;
   if(depacketizer->irq != NO_IRQ_SUPPLIED) {
-    XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), (SYNC_IRQ | STREAM_IRQ | SEQ_ERROR_IRQ));
+    XIo_Out32(REGISTER_ADDRESS(depacketizer, IRQ_MASK_REG), (SYNC_IRQ | STREAM_IRQ | SEQ_ERROR_IRQ | DBS_ERROR_IRQ));
   }
 
   /* Return success */
@@ -1393,6 +1442,16 @@ static int audio_depacketizer_probe(const char *name,
 #ifdef CONFIG_OF
 static int audio_depacketizer_platform_remove(struct platform_device *pdev);
 
+static u32 get_u32(struct of_device *ofdev, const char *s) {
+  u32 *p = (u32 *)of_get_property(ofdev->node, s, NULL);
+  if(p) {
+    return *p;
+  } else {
+    dev_warn(&ofdev->dev, "Parameter %s not found, defaulting to false.\n", s);
+    return FALSE;
+  }
+}
+
 static int __devinit audio_depacketizer_of_probe(struct of_device *ofdev, const struct of_device_id *match)
 {
   struct resource r_mem_struct;
@@ -1402,6 +1461,7 @@ static int __devinit audio_depacketizer_of_probe(struct of_device *ofdev, const 
   struct platform_device *pdev = to_platform_device(&ofdev->dev);
   const char *name = dev_name(&ofdev->dev);
   const char *interfaceType;
+  int is_mcr_host = 0;
   int rc;
 
   /* Obtain the resources for this instance */
@@ -1423,8 +1483,10 @@ static int __devinit audio_depacketizer_of_probe(struct of_device *ofdev, const 
     return(-EFAULT);
   }
 
+  is_mcr_host = get_u32(ofdev, "xlnx,is-mcr-host");
+
   /* Dispatch to the generic function */
-  return(audio_depacketizer_probe(name, pdev, addressRange, irq, interfaceType));
+  return(audio_depacketizer_probe(name, pdev, addressRange, irq, interfaceType, is_mcr_host));
 }
 
 static int __devexit audio_depacketizer_of_remove(struct of_device *dev)
@@ -1467,6 +1529,7 @@ static int audio_depacketizer_platform_probe(struct platform_device *pdev)
   struct resource *addressRange;
   struct resource *irq;
   char *interfaceType;
+  int is_mcr_host;
 
   /* Obtain the resources for this instance */
   addressRange = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -1489,8 +1552,10 @@ static int audio_depacketizer_platform_probe(struct platform_device *pdev)
     return(-EFAULT);
   }
 
+  is_mcr_host = 1; /* TODO */
+
   /* Dispatch to the generic function */
-  return(audio_depacketizer_probe(pdev->name, pdev, addressRange, irq, interfaceType));
+  return(audio_depacketizer_probe(pdev->name, pdev, addressRange, irq, interfaceType, is_mcr_host));
 }
 
 static int audio_depacketizer_platform_remove(struct platform_device *pdev)

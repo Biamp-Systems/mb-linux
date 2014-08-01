@@ -655,7 +655,6 @@ static int flash_assign_mac_address(void *private_data)
   struct net_device *ndev = (struct net_device *)private_data;
   struct sockaddr addr;
   struct mtd_info *mtd;
-  int i;
   size_t retlen;
   int ifIndex;
 #if defined(CONFIG_MTD_CFI_OTP_USER) || defined(CONFIG_MTD_SPI_OTP)
@@ -707,6 +706,9 @@ static int flash_assign_mac_address(void *private_data)
    * address can be erased, but a MAC address in OTP
    * can't be.)
    */
+  if(base_otp_reg == 0 && getOtpRegionOffset() == 0x20){
+      base_otp_reg = 1;
+  }
   read_otp_reg(base_otp_reg + ifIndex, &otp_mac);
   if (otp_mac[0] == 0 && otp_mac[1] == 0 &&
       memcmp(otp_mac, zeroes, 6) != 0 && memcmp(otp_mac, ffs, 6) != 0) {
@@ -936,11 +938,12 @@ static struct net_device_stats *xenet_get_stats(struct net_device *dev)
 static void xenet_set_multicast_list(struct net_device *dev)
 {
   struct net_local *lp = netdev_priv(dev);
+  u32 mcast_count = labx_eth_mcast_count_addr_included(dev,lp->Emac.mc_excl_count);
 
   u32 Options = labx_eth_GetOptions(&lp->Emac);
   u32 maxMulticast = lp->Emac.MacMatchUnits - 2;
 
-  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || dev->mc_count > maxMulticast) {
+  if (dev->flags&(IFF_ALLMULTI|IFF_PROMISC) || mcast_count > maxMulticast) {
     if (dev->mc_count > maxMulticast) {
       printk("Switching to promisc mode (too many multicast addrs: %d > %d)\n", dev->mc_count, maxMulticast);
     }
@@ -1516,7 +1519,7 @@ static const struct ethtool_ops labx_ethtool_ops = {
 static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
   struct net_local *lp = netdev_priv(dev);
-
+  XLlTemac *InstancePtr = (XLlTemac *) &lp->Emac;
   /* gmii_ioctl_data has 4 u16 fields: phy_id, reg_num, val_in & val_out */
   struct mii_ioctl_data *data = (struct mii_ioctl_data *) &rq->ifr_data;
 
@@ -1524,22 +1527,27 @@ static int xenet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
   case SIOCGMIIPHY:	/* Get address of GMII PHY in use. */
   case SIOCGMIIREG:	/* Read GMII PHY register. */
   case SIOCSMIIREG:	/* Write GMII PHY register. */
-    if (NULL == lp->phy_dev) {
-      return -ENODEV;
-    }
+	if (NULL == lp->phy_dev) {
+			return -ENODEV;
+		}
+		return phy_mii_ioctl(lp->phy_dev, data, cmd);
 
-    return phy_mii_ioctl(lp->phy_dev, data, cmd);
-
-  case SIOCDEVPRIVATE + 3:	/* set THRESHOLD */
-  case SIOCDEVPRIVATE + 4:	/* set WAITBOUND */
-  case SIOCDEVPRIVATE + 5:	/* get THRESHOLD */
-  case SIOCDEVPRIVATE + 6:	/* get WAITBOUND */
+	case SIOCDEVPRIVATE + 3:	/* set THRESHOLD */
+	case SIOCDEVPRIVATE + 4:	/* set WAITBOUND */
+	case SIOCDEVPRIVATE + 5:	/* get THRESHOLD */
+	case SIOCDEVPRIVATE + 6:	/* get WAITBOUND */
     /* For the moment, return error since no DMA is supported */
-    return -EFAULT;
+		return -EFAULT;
 
-  default:
-    return -EOPNOTSUPP;
-  }
+  case SIOCDEVPRIVATE + 7:	/* Set IGMP address filter range */
+		copy_from_user(&InstancePtr->igmp_excl_range,(void __user*)rq->ifr_data,sizeof(struct labx_eth_addr_range));
+		break;
+
+ default:
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
 }
 
 

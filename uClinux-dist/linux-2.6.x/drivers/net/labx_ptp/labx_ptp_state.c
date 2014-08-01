@@ -125,9 +125,12 @@ void labx_ptp_timer_state_task(unsigned long data) {
 #ifdef DEBUG_INCREMENT
       /* Periodically print out the increment we're using */
       if(++ptp->slaveDebugCounter >= timeoutTicks) {
+        RtcIncrement increment;
         ptp->slaveDebugCounter = 0;
 
-        printk("PTP increment: 0x%08X\n",ptp_get_increment());
+        get_rtc_increment(ptp, &increment);
+
+        printk("%s: PTP increment: 0x%08X\n", ptp->name, (increment.mantissa << RTC_MANTISSA_SHIFT) | increment.fraction);
       }
 #endif
 
@@ -135,7 +138,7 @@ void labx_ptp_timer_state_task(unsigned long data) {
        * port to the master state.
        */
       if(ptp->ports[i].selectedRole == PTP_MASTER) {
-        printk("PTP master (port %d)\n", i);
+        printk("%s: PTP master (port %d)\n", ptp->name, i);
         for (i=0; i<ptp->numPorts; i++) {
           ptp->ports[i].announceCounter    = 0;
           ptp->ports[i].announceSequenceId = 0x0000;
@@ -168,8 +171,9 @@ void labx_ptp_timer_state_task(unsigned long data) {
     /* Always flag the RTC offset as valid, and zero since we're the master */
     preempt_disable();
     spin_lock_irqsave(&ptp->mutex, flags);
-    ptp->rtcLastOffsetValid = PTP_RTC_OFFSET_VALID;
-    ptp->rtcLastOffset      = 0;
+    ptp->rtcLastOffsetValid    = PTP_RTC_OFFSET_VALID;
+    ptp->rtcLastOffset         = 0;
+    ptp->rtcLastIncrementDelta = 0;
     spin_unlock_irqrestore(&ptp->mutex, flags);
     preempt_enable();
   }
@@ -181,11 +185,23 @@ void labx_ptp_timer_state_task(unsigned long data) {
     /* Regardless of whether we are a master or slave, increment the peer delay request
      * counter and see if it's time to send one to our link peer.
      */
-    ptp->ports[i].pdelayIntervalTimer++;
+    ptp->ports[i].pdelayIntervalTimer += timerTicks;
     MDPdelayReq_StateMachine(ptp, i);
 
     /* Update the PortAnnounceInformation state machine */
     PortAnnounceInformation_StateMachine(ptp, i);
+
+    /* Track consecutive multiple pdelay responses for AVnu_PTP-5 PICS,
+       re-enable the port after five minutes */
+    if(ptp->ports[i].multiplePdelayTimer > 0) {
+      if(ptp->ports[i].multiplePdelayTimer >= timerTicks) {
+        ptp->ports[i].multiplePdelayTimer -= timerTicks;
+      }
+      else {
+        ptp->ports[i].multiplePdelayTimer = 0;
+      }
+      ptp->ports[i].portEnabled = TRUE;
+    }
   }
 
   /* Test to see if the master is new from the last time we checked; if so,
@@ -235,7 +251,6 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
   int i;
 
   ptp->ports[port].stats.rxSyncCount++;
-  ptp->ports[port].syncTimeoutCounter = 0;
 
   /* Only process this packet if we are a slave and it has come from the master
    * we're presently respecting.  If we're the master, spanning tree should prevent
@@ -247,6 +262,9 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
     PtpTime tempTimestamp;
     PtpTime correctionField;
     PtpTime correctedTimestamp;
+
+    // [REMOVED for certifcation] TODO: Sync * 2 is a workaround for Titanium. Remove when Titanium stops dropping sync
+    ptp->ports[port].syncReceiptTimeoutTime = SYNC_INTERVAL_TICKS(ptp, port) * ptp->ports[port].syncReceiptTimeout;
 
     /* This is indeed a SYNC from the present master.  Capture the hardware timestamp
      * at which we received it, and hang on to its sequence ID for matching to the
@@ -289,16 +307,18 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
 void labx_ptp_signal_gm_change(struct ptp_device *ptp) {
 
   ptp->newMaster          = TRUE;
+  ptp->rtcReset           = TRUE;
 
   /* Do not permit the RTC to change until userspace permits it, and also
    * reset the lock state
    */
-  ptp->acquiring          = PTP_RTC_ACQUIRING;
-  ptp->rtcLockState       = PTP_RTC_UNLOCKED;
-  ptp->rtcLockCounter     = 0;
-  ptp->rtcChangesAllowed  = FALSE;
-  ptp->rtcLastOffsetValid = PTP_RTC_OFFSET_VALID;
-  ptp->rtcLastOffset      = 0;
+  ptp->acquiring             = PTP_RTC_ACQUIRING;
+  ptp->rtcLockState          = PTP_RTC_UNLOCKED;
+  ptp->rtcLockCounter        = 0;
+  ptp->rtcChangesAllowed     = FALSE;
+  ptp->rtcLastOffsetValid    = PTP_RTC_OFFSET_VALID;
+  ptp->rtcLastOffset         = 0;
+  ptp->rtcLastIncrementDelta = 0;
 }
 
 /* Processes a newly-received FUP packet for the passed instance */
@@ -324,6 +344,8 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
     PtpTime correctedTimestamp;
     PtpTime difference;
     PtpTime absDifference;
+
+    ptp->ports[port].syncTimeoutCounter = 0;
 
     /* Everything matches; obtain the preciseOriginTimestamp from the packet.
      * This is the time at which the master captured its transmit of the preceding
@@ -354,14 +376,16 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
     preempt_enable();
 
     /* Retrieve the scaled rate offset */
-    ptp->ports[port].cumulativeScaledRateOffset = get_cumulative_scaled_rate_offset_field(rxBuffer);
+    ptp->ports[port].cumulativeScaledRateOffset = get_cumulative_scaled_rate_offset_field(ptp,rxBuffer);
 
     /* Treat GM phase change just like a GM change */
-    if (get_gm_time_base_indicator_field(rxBuffer) != ptp->lastGmTimeBaseIndicator) {
-      printk("GM Phase Change\n");
+    if (get_gm_time_base_indicator_field(ptp,rxBuffer) != ptp->lastGmTimeBaseIndicator) {
+      printk("%s: GM Phase Change\n", ptp->name);
       labx_ptp_signal_gm_change(ptp);
 
-      ptp->lastGmTimeBaseIndicator = get_gm_time_base_indicator_field(rxBuffer);
+      ptp->lastGmTimeBaseIndicator = get_gm_time_base_indicator_field(ptp,rxBuffer);
+      get_gm_phase_change_field(ptp,rxBuffer, &ptp->lastGmPhaseChange);
+      ptp->lastGmFreqChange = get_gm_freq_change_field(ptp,rxBuffer);
     }
 
     /* Compare the timestamps; if the one-way offset plus delay is greater than
@@ -372,11 +396,11 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
     timestamp_difference(&ptp->ports[port].syncRxTimestampTemp, &correctedTimestamp, &difference);
     timestamp_abs(&difference, &absDifference);
     if((absDifference.secondsUpper > 0) || (absDifference.secondsLower > 0) ||
-       (absDifference.nanoseconds > RESET_THRESHOLD_NS)) {
+       (absDifference.nanoseconds > RESET_THRESHOLD_NS) || ptp->rtcReset) {
 
       /* Treat clock changes just like a GM change when we think we are locked */
       if (ptp->rtcLockState == PTP_RTC_LOCKED) {
-        printk("RTC Change while locked\n");
+        printk("%s: RTC Change while locked %04X%08X.%08X\n", ptp->name, absDifference.secondsUpper, absDifference.secondsLower, absDifference.nanoseconds);
         labx_ptp_signal_gm_change(ptp);
       }
 
@@ -387,19 +411,20 @@ static void process_rx_fup(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuf
        * a Grandmaster change yet.
        */
       if(ptp->rtcChangesAllowed) {
-        printk("Resetting RTC!\n");
+        printk("%s: Resetting RTC!\n", ptp->name);
         set_rtc_increment(ptp, &ptp->nominalIncrement);
         set_rtc_time_adjusted(ptp, &correctedTimestamp, &ptp->ports[port].syncRxTimestampTemp);
+        ptp->rtcReset = FALSE;
       }
-   } else {
+    } else {
       /* Less than a second, leave these timestamps and update the servo */
 #ifdef SYNC_DEBUG
-      printk("Sync Rx: %08X%08X.%08X\n", ptp->ports[port].syncRxTimestampTemp.secondsUpper,
+      printk("%s: Sync Rx: %08X%08X.%08X\n", ptp->name, ptp->ports[port].syncRxTimestampTemp.secondsUpper,
         ptp->ports[port].syncRxTimestampTemp.secondsLower, ptp->ports[port].syncRxTimestampTemp.nanoseconds);
-      printk("Sync Tx: %08X%08X.%08X (corrected: %08X%08X.%08X\n", syncTxTimestamp.secondsUpper,
+      printk("%s: Sync Tx: %08X%08X.%08X (corrected: %08X%08X.%08X\n", ptp->name, syncTxTimestamp.secondsUpper,
         syncTxTimestamp.secondsLower, syncTxTimestamp.nanoseconds, correctedTimestamp.secondsUpper,
         correctedTimestamp.secondsLower, correctedTimestamp.nanoseconds);
-      printk("Correction: %08X%08X.%08X\n", correctionField.secondsUpper,
+      printk("%s: Correction: %08X%08X.%08X\n", ptp->name, correctionField.secondsUpper,
         correctionField.secondsLower, correctionField.nanoseconds);
 #endif
       preempt_disable();
@@ -566,6 +591,14 @@ void labx_ptp_rx_state_task(unsigned long data) {
 
 void process_rx_buffer(struct ptp_device *ptp, int port, uint8_t *buffer)
 {
+  uint16_t etherType = get_ethertype(ptp,port,buffer);
+  if ((ptp->properties.packetType == PTP_IPv4 && etherType != IPV4_ETHERTYPE) || 
+     (ptp->properties.packetType == PTP_Layer2 && etherType != PTP_ETHERTYPE)) {
+    /* Discard non IP packets when in PTP_IPv4 Mode */
+    return;
+  }
+
+  if(TRANSPORT_PTP == get_transport_specific(ptp, port, buffer)) {
        /* Determine which message to process */
       switch(get_message_type(ptp, port, buffer)) {
       case MSG_ANNOUNCE:
@@ -604,8 +637,12 @@ void process_rx_buffer(struct ptp_device *ptp, int port, uint8_t *buffer)
         break;
 
       default:
+        printk("%s: Unknown PTP Message: %d\n", ptp->name, get_message_type(ptp,port,buffer));
         break;
       } /* switch(messageType) */
+  } else  {
+    printk("%s: WARNING: Unrecognized transportSpecific rejected:\n", ptp->name);
+  }
 }
 
 /* Tasklet function for PTP Tx packets */
@@ -718,7 +755,7 @@ void labx_ptp_tx_state_task(unsigned long data) {
 void ack_grandmaster_change(struct ptp_device *ptp) {
   unsigned long flags;
 
-  printk("GM ACK\n");
+  printk("%s: GM ACK\n", ptp->name);
   /* Re-enable the changing of RTC parameters */
   preempt_disable();
   spin_lock_irqsave(&ptp->mutex, flags);
@@ -788,9 +825,17 @@ void init_state_machines(struct ptp_device *ptp) {
 
   ptp->masterRateRatio = 0x80000000;
   ptp->masterRateRatioValid = FALSE;
-  ptp->prevRtcIncrement = 0;
+  ptp->prevBaseRtcIncrement = 0;
+  ptp->prevAppliedRtcIncrement = 0;
 
   ptp->lastGmTimeBaseIndicator = 0;
+
+  if(ptp->properties.delayMechanism == PTP_DELAY_MECHANISM_E2E) {
+    for(i=0; i<ptp->numPorts; i++) {
+      ptp->ports[i].selectedRole = PTP_MASTER;
+      /* TODO - Implement proper 1588-2008 9.2 state machine */
+    }
+  }
 
 #ifndef CONFIG_LABX_PTP_NO_TASKLET
   tasklet_init(&ptp->rxTasklet, &labx_ptp_rx_state_task, (unsigned long) ptp);
@@ -805,23 +850,25 @@ void init_state_machines(struct ptp_device *ptp) {
     ptp->ports[i].syncTimeoutCounter      = 0;
   }
 
-  ptp->integral       = 0;
-  ptp->derivative     = 0;
-  ptp->previousOffset = 0;
+  ptp->integral             = 0;
+  ptp->zeroCrossingIntegral = 0;
+  ptp->derivative           = 0;
+  ptp->previousOffset       = 0;
   set_rtc_increment(ptp, &ptp->nominalIncrement);
 
   /* Declare the RTC as initially unlocked, but put a valid, zero, offset
    * in so that it will lock shortly after the lock detection state machine
    * has run for a little bit.
    */
-  ptp->acquiring          = PTP_RTC_ACQUIRING;
-  ptp->rtcLastLockState   = PTP_RTC_UNLOCKED;
-  ptp->rtcLockState       = PTP_RTC_UNLOCKED;
-  ptp->rtcLockCounter     = 0;
-  ptp->rtcLastOffsetValid = PTP_RTC_OFFSET_VALID;
-  ptp->rtcLastOffset      = 0;
+  ptp->acquiring             = PTP_RTC_ACQUIRING;
+  ptp->rtcLastLockState      = PTP_RTC_UNLOCKED;
+  ptp->rtcLockState          = PTP_RTC_UNLOCKED;
+  ptp->rtcLockCounter        = 0;
+  ptp->rtcLastOffsetValid    = PTP_RTC_OFFSET_VALID;
+  ptp->rtcLastOffset         = 0;
+  ptp->rtcLastIncrementDelta = 0;
 
-  printk("PTP master\n");
+  printk("%s: PTP master\n", ptp->name);
 
 #ifndef CONFIG_LABX_PTP_NO_TASKLET
   /* Initialize the Tx state tasklet */

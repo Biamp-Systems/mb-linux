@@ -30,6 +30,7 @@
 
 /* Bytes per MAC address */
 #define MAC_ADDRESS_BYTES  (6)
+#define IPV4_ADDRESS_BYTES   (4)
 
 /* PTP data types and constant definitions */
 typedef struct {
@@ -44,7 +45,7 @@ typedef enum {
   PTP_SLAVE    = 9,
   PTP_PASSIVE  = 7,
   PTP_DISABLED = 3
-    
+
 } PtpRole;
 
 #define PTP_CLOCK_IDENTITY_BYTES  (8)
@@ -64,12 +65,23 @@ typedef enum {
 #define PTP_DELAY_MECHANISM_P2P       (0x02)
 #define PTP_DELAY_MECHANISM_DISABLED  (0xFE)
 
+/* Packet Type */
+typedef enum {
+  PTP_Layer2=0,
+  PTP_IPv4=1,
+} PtpPacketType;
+
+typedef enum {
+  PTP_AS_Profile=0,
+  PTP_Default_Profile=1
+} PtpProfile;
+
 /* I/O control commands and structures for the PTP driver */
 #define IOC_PTP_STOP_SERVICE    _IO('p', 0x10)
 #define IOC_PTP_START_SERVICE   _IO('p', 0x11)
 
 /* Constants defining range and recommended values for RTC lock & unlock
- * detection.  Lock range is specified in nanoseconds and lock time in 
+ * detection.  Lock range is specified in nanoseconds and lock time in
  * milliseconds.
  *
  * PTP_LOCK_RANGE_MAX        - Maximum permissible value for a lock range
@@ -109,6 +121,8 @@ typedef enum {
 typedef uint8_t PtpClockIdentity[PTP_CLOCK_IDENTITY_BYTES];
 
 typedef struct {
+  /* Index of the domain (locally) */
+  uint32_t         domainIndex;
   /* Various PTP-defined properties */
   uint8_t          domainNumber;
   int16_t          currentUtcOffset;
@@ -124,7 +138,11 @@ typedef struct {
   uint32_t         lockTimeMsec;
   uint32_t         unlockThreshNsec;
   uint32_t         unlockTimeMsec;
+  PtpPacketType    packetType;
+  uint8_t          dscp;
+  PtpProfile       profile;
 } PtpProperties;
+
 #define IOC_PTP_GET_PROPERTIES  _IOR('p', 0x12, PtpProperties)
 #define IOC_PTP_SET_PROPERTIES  _IOW('p', 0x13, PtpProperties)
 
@@ -137,6 +155,9 @@ typedef struct {
 
   /* Steps removed from the master */
   uint16_t stepsRemoved;
+
+  /* If using UDP/IP transport, this is the IP address of this port */
+  uint8_t ipv4Address[IPV4_ADDRESS_BYTES];
 
 } PtpPortProperties;
 #define IOC_PTP_GET_PORT_PROPERTIES  _IOWR('p', 0x14, PtpPortProperties)
@@ -202,7 +223,7 @@ typedef struct {
   /* Parameters for the RTC servo */
   RtcIncrement    nominalIncrement;
   PtpCoefficients coefficients;
-  
+
   /* Parameters for the MAC/PHY delay */
   PtpTime rxPhyMacDelay;
   PtpTime txPhyMacDelay;
@@ -321,6 +342,8 @@ enum {
   PTP_EVENTS_A_UNSPEC,
   PTP_EVENTS_A_DOMAIN,
   PTP_EVENTS_A_VALUEMAP,
+  PTP_EVENTS_A_INCREMENT_M,
+  PTP_EVENTS_A_INCREMENT_F,
   __PTP_EVENTS_A_MAX,
 };
 #define PTP_EVENTS_A_MAX (__PTP_EVENTS_A_MAX - 1)
@@ -332,6 +355,7 @@ enum {
   PTP_EVENTS_C_GM_CHANGE,
   PTP_EVENTS_C_RTC_LOCK,
   PTP_EVENTS_C_RTC_UNLOCK,
+  PTP_EVENTS_C_RTC_INCREMENT,
   __PTP_EVENTS_C_MAX,
 };
 #define PTP_EVENTS_C_MAX (__PTP_EVENTS_C_MAX - 1)
