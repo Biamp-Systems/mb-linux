@@ -91,6 +91,16 @@ typedef enum
 	eDMAStoreMasked = 1
 
   } EDMAStoreMask;
+
+typedef enum {
+  eDMAOffsetPure    = 0,
+  eDMAOffsetAddBase = 1,
+} EDMAOffsetType;
+
+typedef enum {
+  eDMAImmediatePure       = 0,
+  eDMAImmediateAddChannel = 1,
+} EDMAImmediateType;
   
 /* Definitions for instruction opcodes */
 #define DMA_OPCODE_NOP                    0x00
@@ -189,6 +199,7 @@ typedef enum
 #define  DMA_INDEX_SELECT_SHIFT(config)      (DMA_OPCODE_SHIFT(config) - config.indexSelectBits)
 #define   DMA_BRANCH_CONDITION_SHIFT(config) (DMA_INDEX_SELECT_SHIFT(config) - DMA_BRANCH_CONDITION_BITS)
 #define   DMA_LOGICAL_OP_SHIFT(config)       (DMA_INDEX_SELECT_SHIFT(config) - DMA_LOGICAL_OP_BITS)
+#define   DMA_ADD_CHANNEL_BIT(config)        (0x01 << DMA_INDEX_VALUE_BITS)
 #define   DMA_INDEX_VALUE_SHIFT(config)      (0)
 #define   DMA_INDEX_VALUE_MASK(config)       (((1<<DMA_INDEX_VALUE_BITS)-1)<<DMA_INDEX_VALUE_SHIFT(config))
 #define   DMA_SOURCE_SELECT_SHIFT(config)    (DMA_INDEX_SELECT_SHIFT(config) - config.sourceSelectBits)
@@ -225,11 +236,13 @@ static inline DMAInstruction DMA_NOP(DMAConfiguration config)
 /* Returns a LOAD_INDEX instruction */
 /* @param index_Select - Selects which of the index counters to load */
 /* @param index_Value  - Value to load into the index counter */
-static inline DMAInstruction DMA_LOAD_INDEX(DMAConfiguration config, EDMAIndex index_Select, uint32_t index_Value)
+static inline DMAInstruction DMA_LOAD_INDEX(DMAConfiguration config, EDMAIndex index_Select, uint32_t index_Value, EDMAImmediateType imm_type)
 {
   return ((DMA_OPCODE_LOAD_INDEX << DMA_OPCODE_SHIFT(config)) |
           (index_Select << DMA_INDEX_SELECT_SHIFT(config))    |
-          ((index_Value << DMA_INDEX_VALUE_SHIFT(config))&DMA_INDEX_VALUE_MASK(config)));
+          ((imm_type == eDMAImmediatePure) ? 0 : DMA_ADD_CHANNEL_BIT(config)) |
+          ((index_Value << DMA_INDEX_VALUE_SHIFT(config)) & 
+           DMA_INDEX_VALUE_MASK(config)));
 }
   
 /* Returns a LOAD_INDEX_INDIRECT instruction */
@@ -251,7 +264,7 @@ static inline DMAInstruction DMA_LOAD_INDEX_INDIRECT(DMAConfiguration config, ED
 
 /* Returns a STORE_INDEX_INDIRECT instruction */
 /* @param index_Select   - Index counter to use as an offset to the store address */
-/* @param source_Select - Which RAM block to load from */
+/* @param source_Select  - Which RAM block to store to */
 /* @param index_Select_2 - Selects which of the index counters to store */
 /* @param store_Address  - Base location to address the RAM block */
 /* @param interlock      - Hold the parameter interlock or not */
@@ -373,9 +386,10 @@ static inline DMAInstruction DMA_LOAD_CACHE_BASE(DMAConfiguration config, uint32
 
 /* Returns a LOAD_CACHE_ADDRESS instruction, used for configuring cache addressing */
 /* for subsequent data transfers. */
-/* @param load_Address - Base location of the address and modulus mask to be loaded from microcode RAM */
+/* @param load_Address  - Base location of the address and modulus mask to be loaded from microcode RAM */
 /* @param source_Select - Which RAM block to load from */
-/* @param index_Select - Index counter to use as an offset to the base address */
+/* @param add_Base      - Whether to add a previously-loaded base address or not */
+/* @param index_Select  - Index counter to use as an offset to the base address */
 static inline DMAInstruction DMA_LOAD_CACHE_OFFSET(DMAConfiguration config, uint32_t load_Address,
                                                    EDMASource source_Select, int add_Base, EDMAIndex index_Select)
 {
@@ -468,9 +482,10 @@ static inline DMAInstruction DMA_LOAD_BUFFER_BASE(DMAConfiguration config, uint3
 
 /* Returns a LOAD_BUFFER_ADDRESS instruction, used for configuring cache addressing */
 /* for subsequent data transfers. */
-/* @param load_Address - Base location of the address and modulus mask to be loaded from microcode RAM */
+/* @param load_Address  - Base location of the address and modulus mask to be loaded from microcode RAM */
 /* @param source_Select - Which RAM block to load from */
-/* @param index_Select - Index counter to use as an offset to the base address */
+/* @param add_Base      - Whether to add a previously-loaded base address or not */
+/* @param index_Select  - Index counter to use as an offset to the base address */
 static inline DMAInstruction DMA_LOAD_BUFFER_OFFSET(DMAConfiguration config, uint32_t load_Address,
                                                     EDMASource source_Select, int add_Base, EDMAIndex index_Select)
 {
