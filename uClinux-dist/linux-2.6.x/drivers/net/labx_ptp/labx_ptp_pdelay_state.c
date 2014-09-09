@@ -382,9 +382,11 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
           break;
 
         case MDPdelayReq_WAITING_FOR_PDELAY_RESP:
-          if(ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port)) 
+          if ((ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port)) ||
+              (ptp->ports[port].rcvdPdelayResp &&
+               ((compare_port_ids(rxRequestingPortId, txRequestingPortId) != 0) ||
+                (rxSequenceId != txSequenceId))))
           {
-            /* Timed out waiting for a matching response, reset the state machine */
 #ifdef PATH_DELAY_DEBUG
             int i;
             printk("Resetting %d: intervalTimer %d, reqInterval %d, rcvdPdelayResp %d, rcvdPdelayRespPtr %p, rxSequence %d, txSequence %d\n",
@@ -397,33 +399,33 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
             for (i=0; i<PORT_ID_BYTES; i++) printk("%02X", txRequestingPortId[i]);
             printk("\n");
 #endif
+ 
+            /* Timeout or a non-matching response was received */
             MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);
           }
-          else if (ptp->ports[port].rcvdPdelayResp) {
-            if((rxSequenceId == txSequenceId) &&
-               (compare_port_ids(rxRequestingPortId, txRequestingPortId) == 0))
-            {
-              /* A matching response was received */
-              MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_WAITING_FOR_PDELAY_RESP_FOLLOW_UP);
-            }
-            else
-            {
-#ifdef PATH_DELAY_DEBUG
-              int i;
-              printk("PDELAY_RESP on port %d does not match request: intervalTimer %d, reqInterval %d, rcvdPdelayResp %d, rcvdPdelayRespPtr %d, rxSequence %d, txSequence %d\n",
-                     port, ptp->ports[port].pdelayIntervalTimer, PDELAY_REQ_INTERVAL_TICKS(ptp, port), ptp->ports[port].rcvdPdelayResp,
-                     (uint32_t) ptp->ports[port].rcvdPdelayRespPtr, rxSequenceId, txSequenceId);
-              printk("rxRequestingPortID:");
-              for (i=0; i<PORT_ID_BYTES; i++) printk("%02X", rxRequestingPortId[i]);
-              printk("\n");
-              printk("txRequestingPortID:");
-              for (i=0; i<PORT_ID_BYTES; i++) printk("%02X", txRequestingPortId[i]);
-              printk("\n");
-#endif
+          else if (ptp->ports[port].rcvdPdelayResp &&
+                   (rxSequenceId == txSequenceId) &&
+                   (compare_port_ids(rxRequestingPortId, txRequestingPortId) == 0))
+          {
+            /* A matching response was received */
+            MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_WAITING_FOR_PDELAY_RESP_FOLLOW_UP);
+          }
+          break;
 
-              /* Clear the received response flag */
-              ptp->ports[port].rcvdPdelayResp = FALSE;
-            }
+        case MDPdelayReq_WAITING_FOR_PDELAY_RESP_FOLLOW_UP:
+          if ((ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port)) ||
+              (ptp->ports[port].rcvdPdelayResp &&
+               (rxSequenceId == txSequenceId)))
+          {
+            /* Timeout or another response was received while waiting for the follow-up */
+            MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);
+          }
+          else if (ptp->ports[port].rcvdPdelayRespFollowUp &&
+                   (rxFUPSequenceId == txFUPSequenceId) &&
+                   (compare_port_ids(rxFUPRequestingPortId, txFUPRequestingPortId) == 0))
+          {
+            /* Matching follow-up received */
+            MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_WAITING_FOR_PDELAY_INTERVAL_TIMER);
           }
           break;
 
