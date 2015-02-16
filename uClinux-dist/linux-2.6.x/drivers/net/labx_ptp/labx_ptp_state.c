@@ -795,8 +795,13 @@ void init_state_machines(struct ptp_device *ptp) {
     pPort->mdPdelayReq_State    = MDPdelayReq_NOT_ENABLED;
     pPort->allowedLostResponses = 3;
     /* Recommended value in 802.1AS/COR1 is 800ns for copper. Add 400ns to allow
-       use of the nTap and still come up as asCapable. */
-    pPort->neighborPropDelayThresh = 1200;
+     * use of the nTap and still come up as asCapable. 
+     *
+     * 2015-02-16: This really should be 1200 in order to be AVnu compliant but
+     * in order to be compatible with certain fiber media converters, this
+     * threshold is increased.
+     */
+    pPort->neighborPropDelayThresh = 10000;
 
     /* PortAnnounceInformation state machine initializetion */
     pPort->portAnnounceInformation_State = PortAnnounceInformation_BEGIN;
