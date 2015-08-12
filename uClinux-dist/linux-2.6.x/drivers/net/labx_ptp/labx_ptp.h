@@ -660,6 +660,7 @@ void get_local_hardware_timestamp(struct ptp_device *ptp, uint32_t port, PacketD
 void get_timestamp(struct ptp_device *ptp, uint32_t port, PacketDirection bufferDirection,
                    uint8_t * packetBuffer, PtpTime *timestamp);
 void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t *txBuffer, PtpTime *correctionField);
+int8_t get_logMessageInterval_field(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer);
 uint16_t get_gm_time_base_indicator_field(uint8_t *rxBuffer);
 void get_gm_phase_change_field(uint8_t *rxBuffer, Integer96 *lastGmPhaseChange);
 uint16_t get_gm_freq_change_field(uint8_t *rxBuffer);
