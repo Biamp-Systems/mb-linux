@@ -469,6 +469,19 @@ void get_correction_field(struct ptp_device *ptp, uint32_t port, uint8_t * rxBuf
   correctionField->nanoseconds = (uint32_t) (rawField >> CORRECTION_FRACTION_BITS);
 }
 
+int8_t get_logMessageInterval_field(struct ptp_device *ptp, uint32_t port, uint8_t *rxBuffer)
+{
+    uint32_t wordOffset;
+    uint32_t packetWord;
+    int8_t logMessageInterval;
+
+    wordOffset = LOG_MSG_INTERVAL_OFFSET;
+    packetWord = read_packet(rxBuffer, &wordOffset);
+    logMessageInterval = packetWord & 0x000000FF;
+
+    return logMessageInterval;
+}
+
 /* Get the gmTimeBaseIndicator from the follow-up TLV */
 uint16_t get_gm_time_base_indicator_field(uint8_t *rxBuffer) {
   uint32_t wordOffset = GM_TIME_BASE_INDICATOR_OFFSET;

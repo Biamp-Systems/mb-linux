@@ -273,6 +273,9 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
     PtpTime correctionField;
     PtpTime correctedTimestamp;
 
+    // Extract new syncInterval (10.2.4.5) from logMessageInterval (10.2.4.2).
+    ptp->ports[port].currentLogSyncInterval = get_logMessageInterval_field(ptp, port, rxBuffer);
+
     // [REMOVED for certifcation] TODO: Sync * 2 is a workaround for Titanium. Remove when Titanium stops dropping sync
     ptp->ports[port].syncReceiptTimeoutTime = SYNC_INTERVAL_TICKS(ptp, port) * ptp->ports[port].syncReceiptTimeout;
 
