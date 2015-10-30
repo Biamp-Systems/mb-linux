@@ -121,7 +121,7 @@ static int ptp_device_event(struct notifier_block *nb, unsigned long event, void
   struct ptp_device *ptp = container_of(nb, struct ptp_device, notifier);
   int on;
   int i;
- 
+
   if (event != NETDEV_CHANGE) return NOTIFY_DONE; /* Only interrested in carrier changes */
 
   on = netif_carrier_ok(dev);
@@ -204,7 +204,7 @@ void ptp_start_service(struct ptp_device *ptp) {
 }
 
 static void PopulateDataSet(struct ptp_device *ptp, uint32_t port, PtpAsPortDataSet *dataSet) {
- 
+
   struct ptp_port *pPort = &ptp->ports[port];
 
   memcpy(&dataSet->clockIdentity, ptp->properties.grandmasterIdentity, sizeof(PtpClockIdentity));
@@ -236,7 +236,7 @@ static void PopulateDataSet(struct ptp_device *ptp, uint32_t port, PtpAsPortData
 }
 
 static void SetFromDataSet(struct ptp_device *ptp, uint32_t port, PtpAsPortDataSet *dataSet) {
- 
+
   struct ptp_port *pPort = &ptp->ports[port];
 
   if (dataSet->setMask & PTP_SET_PORT_ENABLED) {
@@ -252,7 +252,7 @@ static void SetFromDataSet(struct ptp_device *ptp, uint32_t port, PtpAsPortDataS
   }
 
   if (dataSet->setMask & PTP_SET_CURRENT_LOG_SYNC_INTERVAL) {
-    pPort->currentLogSyncInterval = dataSet->currentLogSyncInterval; 
+    pPort->currentLogSyncInterval = dataSet->currentLogSyncInterval;
   }
 
   if (dataSet->setMask & PTP_SET_CURRENT_LOG_PDELAY_REQ_INTERVAL) {
@@ -548,7 +548,7 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
 
   case IOC_PTP_GET_PATH_TRACE:
     {
-      
+
       uint32_t copyResult;
       PtpPathTrace pathTrace = {};
 
@@ -576,7 +576,7 @@ static int ptp_device_ioctl(struct inode *inode, struct file *filp,
 
 /* Character device file operations structure */
 static struct file_operations ptp_device_fops = {
-  .open	   = ptp_device_open,
+  .open    = ptp_device_open,
   .release = ptp_device_release,
   .ioctl   = ptp_device_ioctl,
   .owner   = THIS_MODULE,
@@ -628,7 +628,7 @@ static int ptp_probe(const char *name,
     goto free;
   }
 
-  ptp->virtualAddress = 
+  ptp->virtualAddress =
     (void*) ioremap_nocache(ptp->physicalAddress, ptp->addressRangeSize);
   if(!ptp->virtualAddress) {
     returnValue = -ENOMEM;
@@ -640,7 +640,7 @@ static int ptp_probe(const char *name,
   versionMajor = ((versionWord >> REVISION_FIELD_BITS) & REVISION_FIELD_MASK);
   versionMinor = (versionWord & REVISION_FIELD_MASK);
   versionCompare = ((versionMajor << REVISION_FIELD_BITS) | versionMinor);
-  if((versionCompare < DRIVER_VERSION_MIN) | 
+  if((versionCompare < DRIVER_VERSION_MIN) |
      (versionCompare > DRIVER_VERSION_MAX)) {
     printk(KERN_INFO "%s: Found incompatible hardware version %d.%d at 0x%08X\n",
            ptp->name, versionMajor, versionMinor, (uint32_t)ptp->physicalAddress);
@@ -674,7 +674,7 @@ static int ptp_probe(const char *name,
   }
 
   /* Announce the device */
-  printk(KERN_INFO "%s: Found Lab X PTP hardware %d.%d at 0x%08X, IRQ %d, Ports %d, Width %d bits\n", 
+  printk(KERN_INFO "%s: Found Lab X PTP hardware %d.%d at 0x%08X, IRQ %d, Ports %d, Width %d bits\n",
          ptp->name,
          versionMajor,
          versionMinor,
@@ -779,13 +779,13 @@ static int ptp_probe(const char *name,
            ptp->name, platformData->nominalIncrement.mantissa,
            LABX_PTP_RTC_INC_MIN, LABX_PTP_RTC_INC_MAX);
     goto unmap;
-  }    
+  }
   if((platformData->nominalIncrement.fraction & ~RTC_FRACTION_MASK) != 0) {
     returnValue = -EINVAL;
     printk(KERN_ERR "%s: Nominal RTC increment fraction (0x%08X) has > %d significant bits\n",
            ptp->name, platformData->nominalIncrement.fraction, LABX_PTP_RTC_FRACTION_BITS);
     goto unmap;
-  }    
+  }
   ptp->nominalIncrement.mantissa = platformData->nominalIncrement.mantissa;
   ptp->nominalIncrement.fraction = platformData->nominalIncrement.fraction;
 
@@ -1037,7 +1037,7 @@ static int __init ptp_driver_init(void)
 
   /* Allocate a range of major / minor device numbers for use */
   instanceCount = 0;
-  if((returnValue = register_chrdev_region(MKDEV(DRIVER_MAJOR, 0),MAX_INSTANCES, DRIVER_NAME)) < 0) { 
+  if((returnValue = register_chrdev_region(MKDEV(DRIVER_MAJOR, 0),MAX_INSTANCES, DRIVER_NAME)) < 0) {
     printk(KERN_INFO DRIVER_NAME ": Failed to allocate character device range\n");
   }
 

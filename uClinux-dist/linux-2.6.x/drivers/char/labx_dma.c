@@ -542,7 +542,7 @@ static int32_t await_synced_write(struct labx_dma *dma) {
      */
     if(waitResult == 0) { 
       if ((XIo_In32(DMA_REGISTER_ADDRESS(dma, DMA_SYNC_REG)) & DMA_SYNC_PENDING) == 0) {
-        printk("Missed sync write queue interrupt, cleared and continuing...\n");
+        printk("Missed dma sync write queue interrupt, cleared and continuing...\n");
       } else {
         returnValue = -ETIMEDOUT; 
       }

@@ -251,8 +251,13 @@ static int32_t await_synced_write(struct audio_packetizer *packetizer) {
     /* If the wait returns zero, then the timeout elapsed; if negative, a signal
      * interrupted the wait.
      */
-    if(waitResult == 0) returnValue = -ETIMEDOUT;
-    else if(waitResult < 0) returnValue = -EAGAIN;
+    if(waitResult == 0) { 
+      if ((XIo_In32(REGISTER_ADDRESS(packetizer, SYNC_REG)) & SYNC_PENDING) == 0) {
+        printk("Missed packetizer sync write queue interrupt, cleared and continuing...\n");
+      } else {
+        returnValue = -ETIMEDOUT; 
+      }
+    } else if(waitResult < 0) returnValue = -EAGAIN;
   } else {
     /* No interrupt was supplied during the device probe, simply poll for the bit. */
     /* TODO: Need to introduce timeout semantics to this mode as well! */

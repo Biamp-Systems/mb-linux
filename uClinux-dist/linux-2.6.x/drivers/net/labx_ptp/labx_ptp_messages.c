@@ -118,7 +118,7 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
   packetWord |= port + 1;
   write_packet(txBuffer, wordOffset, packetWord);
 
-  /* Clear the sequence ID and log message interval to zero and set the
+  /* Clear the sequence ID and log message interval to zero, and set the
    * control field appropriately for the message type.
    */
   switch(messageType) {
@@ -146,7 +146,7 @@ static void init_ptp_header(struct ptp_device *ptp, uint32_t port, uint8_t *txBu
   case MSG_PDELAY_RESP_FUP:
     write_packet(txBuffer, wordOffset, 0x0000057F);
     break;
-  
+
   default:
     write_packet(txBuffer, wordOffset, 0x00000500);
   }
@@ -224,7 +224,7 @@ static void init_sync_template(struct ptp_device *ptp, uint32_t port) {
   /* Initialize the header, and clear the originTimestamp for good measure. */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_SYNC_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_SYNC, PTP_SYNC_LENGTH,
-                  (uint16_t) FLAG_TWO_STEP);
+                  (uint16_t) FLAG_TWO_STEP | (uint16_t)FLAG_PTP_TIMESCALE);
   txBuffer = get_output_buffer(ptp, port, PTP_TX_SYNC_BUFFER);
   write_packet(txBuffer , &wordOffset, 0x00000000);
   write_packet(txBuffer , &wordOffset, 0x00000000);
@@ -241,7 +241,7 @@ static void init_fup_template(struct ptp_device *ptp, uint32_t port) {
   txBuffer = get_output_buffer(ptp, port, PTP_TX_FUP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_FUP,
                   PTP_FUP_LENGTH + TLV_HEADER_LENGTH + FOLLOW_UP_INFORMATION_TLV_LENGTH,
-                  (uint16_t) FLAG_NONE);
+                  (uint16_t) FLAG_PTP_TIMESCALE);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -268,7 +268,7 @@ static void init_delay_request_template(struct ptp_device *ptp, uint32_t port) {
   /* Initialize the header, and clear the originTimestamp for good measure */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_DELAY_REQ_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_DELAY_REQ,
-                  PTP_DELAY_REQ_LENGTH, (uint16_t) FLAG_NONE);
+                  PTP_DELAY_REQ_LENGTH, (uint16_t) FLAG_PTP_TIMESCALE);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -285,7 +285,7 @@ static void init_delay_response_template(struct ptp_device *ptp, uint32_t port) 
    */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_DELAY_RESP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_DELAY_RESP,
-                  PTP_DELAY_RESP_LENGTH, (uint16_t) FLAG_NONE);
+                  PTP_DELAY_RESP_LENGTH, (uint16_t) FLAG_TWO_STEP | (uint16_t)FLAG_PTP_TIMESCALE);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -327,7 +327,7 @@ static void init_pdelay_response_template(struct ptp_device *ptp, uint32_t port)
    */
   txBuffer = get_output_buffer(ptp,port,PTP_TX_PDELAY_RESP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset, MSG_PDELAY_RESP,
-                  PTP_PDELAY_RESP_LENGTH, (uint16_t) FLAG_TWO_STEP);
+                  PTP_PDELAY_RESP_LENGTH, (uint16_t) FLAG_TWO_STEP | (uint16_t)FLAG_PTP_TIMESCALE);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);
@@ -349,7 +349,7 @@ static void init_pdelay_response_fup_template(struct ptp_device *ptp, uint32_t p
   txBuffer = get_output_buffer(ptp,port,PTP_TX_PDELAY_RESP_FUP_BUFFER);
   init_ptp_header(ptp, port, txBuffer, &wordOffset,
                   MSG_PDELAY_RESP_FUP, PTP_PDELAY_RESP_FUP_LENGTH,
-                  (uint16_t) FLAG_NONE);
+                  (uint16_t) FLAG_PTP_TIMESCALE);
 
   write_packet(txBuffer, &wordOffset, 0x00000000);
   write_packet(txBuffer, &wordOffset, 0x00000000);

@@ -315,7 +315,7 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
                 (announceTimeout || (syncTimeout && ptp->gmPresent)) &&
                 !pPort->updtInfo && !pPort->rcvdMsg) {
 
-              BMCA_DBG("Announce AGED: (announce %d >= %d || sync %d >= %d)\n",
+              BMCA_DBG("Announce AGED: (announce %d >= %d || sync %dms > %dms)\n",
                 pPort->announceTimeoutCounter, ANNOUNCE_INTERVAL_TICKS(ptp, port) * pPort->announceReceiptTimeout,
                 pPort->syncTimeoutCounter, pPort->syncReceiptTimeoutTime);
 
@@ -474,7 +474,7 @@ static void updtRolesTree(struct ptp_device *ptp)
         result = result << 33;
         result = result / ptp->masterRateRatio;
         result = result - (1ull << 32);
-        ptp->lastGmFreqChange = (uint32_t)(result >> 9);
+        ptp->lastGmFreqChange = (uint32_t)(result << 9);
       } else {
         ptp->lastGmFreqChange = 0;
       }

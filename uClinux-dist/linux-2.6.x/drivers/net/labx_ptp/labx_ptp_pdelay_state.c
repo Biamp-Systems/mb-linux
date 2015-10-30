@@ -28,6 +28,15 @@
 
 /* Define this to get some extra debug on path delay messages */
 /* #define PATH_DELAY_DEBUG */
+#ifdef PATH_DELAY_DEBUG
+unsigned char *pdelay_state_strings[] = { "NOT_ENABLED", 
+                                        "INITIAL_SEND_PDELAY_REQ",
+                                        "RESET", 
+                                        "SEND_PDELAY_REQ",
+                                        "WAITING_FOR_PDELAY_RESP",
+                                        "WAITING_FOR_PDELAY_RESP_FOLLOW_UP",
+                                        "WAITING_FOR_PDELAY_INTERVAL_TIMER" };
+#endif
 
 static void computePdelayRateRatio(struct ptp_device *ptp, uint32_t port)
 {
@@ -125,7 +134,7 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
   uint8_t rxSourcePortId[PORT_ID_BYTES];
 
 #ifdef PATH_DELAY_DEBUG
-  printk("MDPdelayReq: Set State %d (port index %d)\n", newState, port);
+  printk("MDPdelayReq: Set State %s (port index %d)\n", pdelay_state_strings[newState], port);
 #endif
 
   ptp->ports[port].mdPdelayReq_State = newState;
@@ -156,21 +165,29 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
 
       /* Track consecutive multiple pdelay responses for AVnu_PTP-5 PICS */
       ptp->ports[port].pdelayResponses = 0;
-      ptp->ports[port].multiplePdelayResponses = 0;
       break;
 
     case MDPdelayReq_RESET:
       ptp->ports[port].initPdelayRespReceived = FALSE;
       ptp->ports[port].rcvdPdelayResp = FALSE;
       ptp->ports[port].rcvdPdelayRespFollowUp = FALSE;
-      if (ptp->ports[port].lostResponses <= ptp->ports[port].allowedLostResponses)
+      ptp->ports[port].multiplePdelayResponses = 0;
+      if (ptp->ports[port].lostResponses < ptp->ports[port].allowedLostResponses)
       {
         ptp->ports[port].lostResponses++;
+#ifdef PATH_DELAY_DEBUG
+        printk("lostResponses=%d",ptp->ports[port].lostResponses);
+#endif
       }
       else
       {
         ptp->ports[port].isMeasuringDelay = FALSE;
         ptp->ports[port].asCapable = FALSE;
+        /* Force neighborPropDelay to out of threshold to avoid accidentally going back to asCapable too soon */
+        ptp->ports[port].neighborPropDelay = ptp->ports[port].neighborPropDelayThresh+1;
+#ifdef PATH_DELAY_DEBUG
+        printk("Too many lost response lostResponses=%d",ptp->ports[port].lostResponses);
+#endif
       }
       break;
 
@@ -180,18 +197,30 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
       ptp->ports[port].pdelayIntervalTimer = 0; // currentTime ("now" is zero ticks)
 
       /* Track consecutive multiple pdelay responses for AVnu_PTP-5 PICS */
-      if (ptp->ports[port].pdelayResponses == 1) {
-        ptp->ports[port].multiplePdelayResponses = 0;
-      } else if (ptp->ports[port].pdelayResponses > 1) {
-        ptp->ports[port].multiplePdelayResponses++;
-        if (ptp->ports[port].multiplePdelayResponses >= 3) {
-          ptp->ports[port].multiplePdelayTimer = ((5 * 60 * 1000) / PTP_TIMER_TICK_MS); 
-          printk("Disabling AS on port %d due to multiple pdelay responses (%d %d).\n",
-            port+1, ptp->ports[port].pdelayResponses, ptp->ports[port].multiplePdelayResponses);
-          ptp->ports[port].portEnabled = FALSE;
-        }
+
+      /* We got here and only saw one response, so clear the multiplePdelayResponses counter for AVnu gPTP PICS-5 */
+      if( ptp->ports[port].pdelayResponses == 1 ) {
+          ptp->ports[port].pdelayResponses = 0;
+          ptp->ports[port].multiplePdelayResponses = 0;
       }
-      ptp->ports[port].pdelayResponses = 0;
+      else
+      if (ptp->ports[port].pdelayResponses >= 2) {
+          /* got 2 or more responses since last send, this is not good */
+          ptp->ports[port].multiplePdelayResponses++;
+#ifdef PATH_DELAY_DEBUG
+          printk("AS Port %d extra pdelay response (%d %d).\n",
+            port+1, ptp->ports[port].pdelayResponses, ptp->ports[port].multiplePdelayResponses);
+#endif
+          if( ptp->ports[port].multiplePdelayResponses >= 3 ) {
+              /* this exchange happened 3 times in a row */
+              ptp->ports[port].multiplePdelayTimer = ((5 * 60 * 1000) / PTP_TIMER_TICK_MS);
+#ifdef PATH_DELAY_DEBUG
+              printk("Disabling AS for 5 min on port %d due to multiple pdelay responses (%d %d).\n",
+                port+1, ptp->ports[port].pdelayResponses, ptp->ports[port].multiplePdelayResponses);
+#endif
+              ptp->ports[port].multiplePdelayResponses=0;
+          }
+      }
       break;
 
     case MDPdelayReq_WAITING_FOR_PDELAY_RESP:
@@ -206,7 +235,7 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
       get_timestamp(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespPtr,
         &ptp->ports[port].pdelayReqRxTimestamp);
 
-      /* Capture the hardware timestamp at which we received this packet, and hang on to 
+      /* Capture the hardware timestamp at which we received this packet, and hang on to
        * it for delay and rate calculation. (Trsp4 - our local clock) */
       get_local_hardware_timestamp(ptp, port, RECEIVED_PACKET,
         ptp->ports[port].rcvdPdelayRespPtr, &ptp->ports[port].pdelayRespRxTimestamp);
@@ -214,7 +243,7 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
 
     case MDPdelayReq_WAITING_FOR_PDELAY_INTERVAL_TIMER:
       ptp->ports[port].rcvdPdelayRespFollowUp = FALSE;
- 
+
       /* Obtain the follow up timestamp for delay and rate calculation.
        * (Trsp3 - responder local clock) */
       get_timestamp(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespFollowUpPtr,
@@ -230,7 +259,7 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
       }
       ptp->ports[port].lostResponses = 0;
       ptp->ports[port].isMeasuringDelay = TRUE;
-  
+
       get_source_port_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespPtr, rxSourcePortId);
 
 #ifdef PATH_DELAY_DEBUG
@@ -299,6 +328,11 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
     uint32_t txFUPSequenceId = 0;
     MDPdelayReq_State_t prevState;
     uint8_t *txBuffer;
+
+    /* Do not send anything if we are in AVnu PICS-5 delay */
+    if(ptp->ports[port].multiplePdelayTimer > 0) {
+        return;
+    }
 
     memset(rxRequestingPortId, 0, PORT_ID_BYTES);
     memset(txRequestingPortId, 0, PORT_ID_BYTES);
@@ -369,18 +403,31 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
           {
             /* We didn't see a timestamp for some reason (this can happen on startup sometimes) */
             MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);
+#ifdef PATH_DELAY_DEBUG
+            printk("ptp: We didn't see a timestamp for some reason on port %d\n", port);
+#endif
+
           }
           break;
 
         case MDPdelayReq_WAITING_FOR_PDELAY_RESP:
-          if ((ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port)) ||
-              (ptp->ports[port].rcvdPdelayResp &&
+          if ((ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port)))
+          {
+#ifdef PATH_DELAY_DEBUG
+            int i;
+            printk("AS: Timeout - Resetting %d, %d, %d\n",
+              port, ptp->ports[port].pdelayIntervalTimer, PDELAY_REQ_INTERVAL_TICKS(ptp, port) );
+#endif
+
+            /* Timeout */
+            MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);
+          } else if ((ptp->ports[port].rcvdPdelayResp &&
                ((compare_port_ids(rxRequestingPortId, txRequestingPortId) != 0) ||
                 (rxSequenceId != txSequenceId))))
           {
 #ifdef PATH_DELAY_DEBUG
             int i;
-            printk("Resetting %d: intervalTimer %d, reqInterval %d, rcvdPdelayResp %d, rcvdPdelayRespPtr %d, rxSequence %d, txSequence %d\n",
+            printk("No Match: Resetting %d: intervalTimer %d, reqInterval %d, rcvdPdelayResp %d, rcvdPdelayRespPtr %p, rxSequence %d, txSequence %d\n",
               port, ptp->ports[port].pdelayIntervalTimer, PDELAY_REQ_INTERVAL_TICKS(ptp, port), ptp->ports[port].rcvdPdelayResp,
               ptp->ports[port].rcvdPdelayRespPtr, rxSequenceId, txSequenceId);
             printk("rxRequestingPortID:");
@@ -404,12 +451,30 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
           break;
 
         case MDPdelayReq_WAITING_FOR_PDELAY_RESP_FOLLOW_UP:
-          if ((ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port)) ||
-              (ptp->ports[port].rcvdPdelayResp &&
+          if(ptp->ports[port].pdelayIntervalTimer >= PDELAY_REQ_INTERVAL_TICKS(ptp, port) ) {
+              /* Timeout while waiting for the follow-up */
+              MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);
+
+  #ifdef PATH_DELAY_DEBUG
+              printk("ptp: Timeout while waiting for the follow-up: \n" );
+  #endif
+          }
+          else if ((ptp->ports[port].rcvdPdelayResp &&
                (rxSequenceId == txSequenceId)))
           {
-            /* Timeout or another response was received while waiting for the follow-up */
-            MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);
+            /* Another response was received while waiting for the follow-up */
+            MDPdelayReq_StateMachine_SetState(ptp, port, MDPdelayReq_RESET);            
+
+#ifdef PATH_DELAY_DEBUG
+            printk("ptp: Another response was received while waiting for the follow-up\n" );
+#endif
+            ptp->ports[port].multiplePdelayTimer = ((5 * 60 * 1000) / PTP_TIMER_TICK_MS);
+#ifdef PATH_DELAY_DEBUG
+            printk("Disabling AS for 5 min on port %d due to multiple pdelay responses (%d %d).\n",
+              port+1, ptp->ports[port].pdelayResponses, ptp->ports[port].multiplePdelayResponses);
+#endif
+            ptp->ports[port].pdelayResponses = 0;
+            ptp->ports[port].multiplePdelayResponses = 0;
           }
           else if (ptp->ports[port].rcvdPdelayRespFollowUp &&
                    (rxFUPSequenceId == txFUPSequenceId) &&
