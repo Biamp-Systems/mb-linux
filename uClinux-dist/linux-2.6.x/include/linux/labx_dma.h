@@ -28,7 +28,7 @@
 
 #include <linux/ioport.h>
 #include <linux/miscdevice.h>
-#include <linux/labx_dma_coprocessor_defs.h>
+#include <linux/dma_coprocessor_defs.h>
 
 #define NAME_MAX_SIZE  256
 

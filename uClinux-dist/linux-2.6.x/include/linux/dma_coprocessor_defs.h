@@ -1,7 +1,7 @@
 /*
- *  linux/include/linux/labx_dma_coprocessor_defs.h
+ *  linux/include/linux/dma_coprocessor_defs.h
  *
- *  Lab X Technologies DMA coprocessor definitions
+ *  DMA coprocessor definitions
  *
  *  Written by Chris Wulff (chris.wulff@labxtechnologies.com)
  *
@@ -23,11 +23,11 @@
  *
  */
 
-#ifndef _LABX_DMA_COPROCESSOR_DEFS_H_
-#define _LABX_DMA_COPROCESSOR_DEFS_H_
+#ifndef _DMA_COPROCESSOR_DEFS_H_
+#define _DMA_COPROCESSOR_DEFS_H_
 
 #include <linux/types.h>
-#include <linux/labx_microengine_defs.h>
+#include "microengine_defs.h"
 
 /* Type definition for the instructions used by the coprocessor */
 #define DMA_INSTRUCTION_WIDTH  32
@@ -725,8 +725,8 @@ typedef struct {
 #define DMA_HAS_STATUS_FIFO (1)
 
 /* Indices for identifying memory resources */
-#define LABX_DMA_ADDRESS_RANGE_RESOURCE    (0)
-#define LABX_DMA_NUM_RESOURCES             (1)
+#define DMA_ADDRESS_RANGE_RESOURCE    (0)
+#define DMA_NUM_RESOURCES             (1)
 
 /* Constant and type definitions for the optional status FIFO */
 
@@ -745,27 +745,27 @@ typedef struct {
 } DMAStatusPacket;
 
 /* Generic Netlink family name, version, and multicast groups for Lab X DMA events */
-#define LABX_DMA_EVENTS_FAMILY_NAME     "LABX_DMA_EVTS"
-#define LABX_DMA_EVENTS_FAMILY_VERSION  1
-#define LABX_DMA_EVENTS_STATUS_GROUP    "StatusGroup"
+#define DMA_EVENTS_FAMILY_NAME     "DMA_EVTS"
+#define DMA_EVENTS_FAMILY_VERSION  1
+#define DMA_EVENTS_STATUS_GROUP    "StatusGroup"
 
 /* Constant enumeration for Netlink event commands from the Lab X DMA driver */
 enum {
-  LABX_DMA_EVENTS_C_UNSPEC,
-  LABX_DMA_EVENTS_C_STATUS_PACKETS,
-  __LABX_DMA_EVENTS_C_MAX,
+  DMA_EVENTS_C_UNSPEC,
+  DMA_EVENTS_C_STATUS_PACKETS,
+  __DMA_EVENTS_C_MAX,
 };
-#define LABX_DMA_EVENTS_C_MAX (__LABX_DMA_EVENTS_C_MAX - 1)
+#define DMA_EVENTS_C_MAX (__DMA_EVENTS_C_MAX - 1)
 
 /* Netlink family attributes */
 enum {
-  LABX_DMA_EVENTS_A_UNSPEC,
-  LABX_DMA_EVENTS_A_DMA_DEVICE,
-  LABX_DMA_EVENTS_A_STATUS_OVERFLOW,
-  LABX_DMA_EVENTS_A_STATUS_ARRAY,
-  __LABX_DMA_EVENTS_A_MAX,
+  DMA_EVENTS_A_UNSPEC,
+  DMA_EVENTS_A_DMA_DEVICE,
+  DMA_EVENTS_A_STATUS_OVERFLOW,
+  DMA_EVENTS_A_STATUS_ARRAY,
+  __DMA_EVENTS_A_MAX,
 };
-#define LABX_DMA_EVENTS_A_MAX (__LABX_DMA_EVENTS_A_MAX - 1)
+#define DMA_EVENTS_A_MAX (__DMA_EVENTS_A_MAX - 1)
 
 /* Enumerated values for the status overflow field */
 #define DMA_STATUS_FIFO_GOOD      ((uint32_t) 0)
@@ -773,18 +773,18 @@ enum {
 
 /* Constant enumeration defining an array of status packets */
 enum {
-  LABX_DMA_STATUS_ARRAY_A_LENGTH,
-  LABX_DMA_STATUS_ARRAY_A_PACKETS,
-  __LABX_DMA_STATUS_ARRAY_A_MAX,
+  DMA_STATUS_ARRAY_A_LENGTH,
+  DMA_STATUS_ARRAY_A_PACKETS,
+  __DMA_STATUS_ARRAY_A_MAX,
 };
-#define LABX_DMA_STATUS_ARRAY_A_MAX (__LABX_DMA_STATUS_ARRAY_A_MAX - 1)
+#define DMA_STATUS_ARRAY_A_MAX (__DMA_STATUS_ARRAY_A_MAX - 1)
 
 /* Constant enumeration defining a single status packet */
 enum {
-  LABX_DMA_STATUS_PACKET_A_LENGTH,
-  LABX_DMA_STATUS_PACKET_A_WORDS,
-  __LABX_DMA_STATUS_PACKET_A_MAX,
+  DMA_STATUS_PACKET_A_LENGTH,
+  DMA_STATUS_PACKET_A_WORDS,
+  __DMA_STATUS_PACKET_A_MAX,
 };
-#define LABX_DMA_STATUS_PACKET_A_MAX (__LABX_DMA_STATUS_PACKET_A_MAX - 1)
+#define DMA_STATUS_PACKET_A_MAX (__DMA_STATUS_PACKET_A_MAX - 1)
 
-#endif /* _LABX_DMA_COPROCESSOR_DEFS_H_ */
+#endif /* _DMA_COPROCESSOR_DEFS_H_ */

@@ -32,7 +32,7 @@
 #include <linux/ioport.h>
 #include <linux/types.h>
 #include <linux/wait.h>
-#include <net/labx_avb/packet_engine_defs.h>
+#include <net/biamp_avb/packet_engine_defs.h>
 
 /* Register definitions */
 #define CONTROL_REG       (0x000)

@@ -1,5 +1,5 @@
 /*
- *  linux/include/net/labx_ethernet/labx_ethernet_defs.h
+ *  linux/include/net/biamp_ethernet/biamp_ethernet_defs.h
  *
  *  Lab X Technologies Ethernet MAC driver definitions
  *
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef _LABX_ETHERNET_DEFS_H_
-#define _LABX_ETHERNET_DEFS_H_
+#ifndef _BIAMP_ETHERNET_DEFS_H_
+#define _BIAMP_ETHERNET_DEFS_H_
 
 #include <linux/types.h>
 #include <linux/phy.h>
@@ -48,7 +48,7 @@
 #define MAC_DMA_SGDMA	3	/* scatter gather DMA */
 
 /* Platform device data structure for LocalLink Ethernet */
-struct labx_ll_eth_platform_data {
+struct biamp_ll_eth_platform_data {
   uint8_t tx_csum;
   uint8_t rx_csum;
   uint8_t dcr_host;
@@ -88,7 +88,7 @@ struct labx_ll_eth_platform_data {
 #define XPAR_LL_NONE    3 /* No legacy traffic, only MAC/MDIO control */
 
 /* Platform device data structure for Direct Ethernet */
-struct labx_eth_platform_data {
+struct biamp_eth_platform_data {
   uint8_t tx_csum;
   uint8_t rx_csum;
   uint8_t dcr_host;

@@ -32,7 +32,7 @@
 #include <linux/ioport.h>
 #include <linux/types.h>
 #include <linux/wait.h>
-#include <net/labx_avb/packet_engine_defs.h>
+#include <net/biamp_avb/packet_engine_defs.h>
 
 /* Macros for determining sub-addresses for address ranges and individual registers.
  * These are affected by the amount of address space devoted to packet template and 

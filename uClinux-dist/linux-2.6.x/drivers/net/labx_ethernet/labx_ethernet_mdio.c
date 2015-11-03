@@ -20,7 +20,7 @@
 #include <linux/phy.h>
 
 #include "labx_ethernet.h"
-#include "net/labx_ethernet/labx_ethernet_defs.h"
+#include "net/biamp_ethernet/biamp_ethernet_defs.h"
 
 
 static void labx_eth_free_mdio_bus(struct mii_bus *bus)
@@ -65,7 +65,7 @@ int labx_eth_mdio_reset(struct mii_bus *bus)
 	return 0;
 }
 
-int labx_eth_mdio_bus_init(struct device *dev, struct labx_eth_platform_data *pdata, XLlTemac *InstancePtr)
+int labx_eth_mdio_bus_init(struct device *dev, struct biamp_eth_platform_data *pdata, XLlTemac *InstancePtr)
 {
 	struct mii_bus *new_bus;
 	int ret = -ENOMEM;

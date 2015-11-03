@@ -1,5 +1,5 @@
 /*
- *  include/linux/labx_legacy_bridge.h
+ *  include/linux/legacy_bridge.h
  *
  *  Legacy packet bridge configuration driver
  *
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef _LABX_LEGACY_BRIDGE_DEFS_H_
-#define _LABX_LEGACY_BRIDGE_DEFS_H_
+#ifndef _LEGACY_BRIDGE_DEFS_H_
+#define _LEGACY_BRIDGE_DEFS_H_
 
 #include <linux/types.h>
 
@@ -33,7 +33,7 @@
 
 /* Address range definitions */
 #define BRIDGE_REGS_BASE   (0x00000000)
-#define LABX_MAC_REGS_BASE (0x00004000)
+#define MAC_REGS_BASE (0x00004000)
 
 /* Port selection for within the bridge register space */
 #define AVB_PORTS_BASE   (0x00000080)
@@ -78,7 +78,7 @@
 /* Address definitions for the Lab X MAC used for the backplane PHY */
 
 #define BP_MAC_REG_ADDRESS(device, offset) \
-  ((uintptr_t) device->virtualAddress | LABX_MAC_REGS_BASE | (offset << 2))
+  ((uintptr_t) device->virtualAddress | MAC_REGS_BASE | (offset << 2))
 
 #define MAC_RX_CONFIG_REG  (0x00000001)
 #  define MAC_RX_RESET (0x80000000)

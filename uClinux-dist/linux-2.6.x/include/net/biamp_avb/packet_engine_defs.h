@@ -1,5 +1,5 @@
 /*
- *  linux/include/net/labx_avb/packet_engine_defs.h
+ *  linux/include/net/avb/packet_engine_defs.h
  *
  *  Lab X Technologies AVB packet engine definitions
  *
@@ -27,7 +27,7 @@
 #define _PACKET_ENGINE_DEFS_H_
 
 #include <linux/types.h>
-#include <linux/labx_microengine_defs.h>
+#include "linux/microengine_defs.h"
 
 /*
  * Common definitions

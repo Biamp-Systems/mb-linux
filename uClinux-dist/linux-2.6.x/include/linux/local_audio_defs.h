@@ -1,11 +1,12 @@
 /*
- *  linux/include/linux/labx_local_audio_defs.h
+ *  linux/include/linux/local_audio_defs.h
  *
- *  Lab X Technologies local audio definitions
+ *  Local audio definitions
  *
  *  Written by Chris Wulff (chris.wulff@labxtechnologies.com)
  *
  *  Copyright (C) 2010 Lab X Technologies LLC, All Rights Reserved.
+ *  Copyright (C) 2015 Biamp Systems, Inc., All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

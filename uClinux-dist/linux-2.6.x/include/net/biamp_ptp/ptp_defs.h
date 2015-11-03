@@ -1,7 +1,7 @@
 /*
- *  linux/include/net/labx_ptp/labx_ptp_defs.h
+ *  linux/include/net/biamp_ptp/ptp_defs.h
  *
- *  Lab X Technologies PTP driver definitions
+ *  PTP driver definitions
  *
  *  Written by Eldridge M. Mount IV (eldridge.mount@labxtechnologies.com)
  *
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef _LABX_PTP_DEFS_H_
-#define _LABX_PTP_DEFS_H_
+#ifndef _PTP_DEFS_H_
+#define _PTP_DEFS_H_
 
 #include <linux/types.h>
 
@@ -162,18 +162,18 @@ typedef struct {
  * nominal increment.  This limits the RTC clock range to [100, 250] MHz, which
  * is a reasonable limitation for good performance without excessive precision.
  */
-#define LABX_PTP_RTC_MANTISSA_BITS   (4)
-#  define LABX_PTP_RTC_INC_MIN ( 4)
-#  define LABX_PTP_RTC_INC_MAX (10)
-#define LABX_PTP_RTC_FRACTION_BITS  (27)
+#define PTP_RTC_MANTISSA_BITS   (4)
+#  define PTP_RTC_INC_MIN ( 4)
+#  define PTP_RTC_INC_MAX (10)
+#define PTP_RTC_FRACTION_BITS  (27)
 typedef struct {
   uint32_t mantissa;
   uint32_t fraction;
 } RtcIncrement;
 
 /* Number of bits in the timer prescaler and divider, respectively */
-#define LABX_PTP_TIMER_PRESCALER_BITS  (12)
-#define LABX_PTP_TIMER_DIVIDER_BITS    (10)
+#define PTP_TIMER_PRESCALER_BITS  (12)
+#define PTP_TIMER_DIVIDER_BITS    (10)
 
 /* Platform data structure for configuring an instance with board-specific
  * software parameters.  The RTC coefficients are signed, fully-fractional values;
@@ -350,5 +350,5 @@ enum {
 /* Maximum number of key / value pair strings that can occur in a value map */
 #define PTP_VALUEMAP_MAX_PAIRS (16)
 
-#endif /* _LABX_PTP_DEFS_H_ */
+#endif /* _PTP_DEFS_H_ */
 

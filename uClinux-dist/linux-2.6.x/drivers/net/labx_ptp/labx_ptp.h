@@ -32,7 +32,7 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/types.h>
-#include <net/labx_ptp/labx_ptp_defs.h>
+#include <net/biamp_ptp/ptp_defs.h>
 
 /* Name of the driver for use by all the modules */
 #define DRIVER_NAME "labx_ptp"

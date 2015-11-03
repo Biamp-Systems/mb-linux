@@ -27,7 +27,7 @@
 #include "labrinth_tdm_output.h"
 #include <asm/uaccess.h>
 #include <linux/labx_local_audio.h>
-#include <linux/labx_local_audio_defs.h>
+#include <linux/local_audio_defs.h>
 #include <linux/platform_device.h>
 #include <xio.h>
 

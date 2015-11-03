@@ -33,9 +33,9 @@
 #include <linux/fcntl.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
-#include <linux/labx_dma_coprocessor_defs.h>
+#include <linux/dma_coprocessor_defs.h>
 #include <linux/labx_local_audio.h>
-#include <linux/labx_local_audio_defs.h>
+#include <linux/local_audio_defs.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <xio.h>
@@ -430,7 +430,7 @@ static int labx_local_audio_pdev_probe(struct platform_device *pdev)
   struct resource *addressRange;
 
   /* Obtain the resources for this instance */
-  addressRange = platform_get_resource(pdev, IORESOURCE_MEM, LABX_DMA_ADDRESS_RANGE_RESOURCE);
+  addressRange = platform_get_resource(pdev, IORESOURCE_MEM, DMA_ADDRESS_RANGE_RESOURCE);
   if (!addressRange) return(-ENXIO);
 
   /* Dispatch to the generic function */

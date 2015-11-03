@@ -1,12 +1,13 @@
 /*
- *  include/linux/labx_tdm_audio_defs.h
+ *  include/linux/tdm_audio_defs.h
  *
- *  Lab X Technologies TDM audio driver
+ *  TDM audio driver
  *
  *  Written by Eldridge M. Mount IV (eldridge.mount@labxtechnologies.com)
  *  Written by Albert M. Hajjar (albert.hajjar@labxtechnologies.com)
  *
  *  Copyright (C) 2012 Lab X Technologies, All Rights Reserved.
+ *  Copyright (C) 2015 Biamp Systems, Inc., All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,8 +25,8 @@
  *
  */
 
-#ifndef _LABX_TDM_AUDIO_DEFS_H_
-#define _LABX_TDM_AUDIO_DEFS_H_
+#ifndef _TDM_AUDIO_DEFS_H_
+#define _TDM_AUDIO_DEFS_H_
 
 #include <linux/types.h>
 #include <linux/ioctl.h>
@@ -137,11 +138,11 @@ typedef struct {
 #define IOC_ARM_ERROR_IRQS              _IO(AUDIO_TDM_IOC_CHAR,  0x05)
 
 /* Error number definitions */
-#define LABX_TDM_AUDIO_ERRNO_BASE  0x0400
-#define IS_LABX_TDM_AUDIO_ERRNO(errno) (errno > LABX_TDM_AUDIO_ERRNO_BASE && errno <= (LABX_TDM_AUDIO_ERRNO_BASE + ETDMERRCNT))
+#define TDM_AUDIO_ERRNO_BASE  0x0400
+#define IS_TDM_AUDIO_ERRNO(errno) (errno > TDM_AUDIO_ERRNO_BASE && errno <= (TDM_AUDIO_ERRNO_BASE + ETDMERRCNT))
 
 enum TdmErrno {
-  TDMERRNOBASE = LABX_TDM_AUDIO_ERRNO_BASE,
+  TDMERRNOBASE = TDM_AUDIO_ERRNO_BASE,
   ENUMCHNOTSUPPORTED,
   ENUMCHEXCDSCONF,
   ESLTDSTYNOTSUPPORTED,
@@ -154,14 +155,14 @@ enum TdmErrno {
   EBADBURSTLENMUL,
   EPINLOOPNOTIMPL,
   ETDMLOOPNOTIMPL,
-  ETDMERRCNT = ETDMLOOPNOTIMPL - LABX_TDM_AUDIO_ERRNO_BASE
+  ETDMERRCNT = ETDMLOOPNOTIMPL - TDM_AUDIO_ERRNO_BASE
 };
 
 #ifndef __KERNEL__
-#define LABX_TDM_AUDIO_ERRSTRING(errno) (labxTdmAudioErrnoStrings[((errno) & ~LABX_TDM_AUDIO_ERRNO_BASE) - 1])
+#define TDM_AUDIO_ERRSTRING(errno) (tdmAudioErrnoStrings[((errno) & ~TDM_AUDIO_ERRNO_BASE) - 1])
 
-#ifdef LABX_TDM_AUDIO_ERRNO_STRINGS
-const char* labxTdmAudioErrnoStrings[ETDMERRCNT] = {
+#ifdef TDM_AUDIO_ERRNO_STRINGS
+const char* tdmAudioErrnoStrings[ETDMERRCNT] = {
   "Number of channels not supported by platform",
   "Number of channels exceeds maximum supported by lane count/slot density/sample rate configuration",
   "Slot density not supported by platform",
@@ -176,7 +177,7 @@ const char* labxTdmAudioErrnoStrings[ETDMERRCNT] = {
   "TDM loopback not implemented"
 };
 #else
-extern const char* labxTdmAudioErrnoStrings[ETDMERRCNT];
+extern const char* tdmAudioErrnoStrings[ETDMERRCNT];
 #endif
 #endif /* !__KERNEL__ */
 

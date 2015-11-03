@@ -30,7 +30,7 @@
 #include <linux/highmem.h>
 #include <linux/ioport.h>
 #include <linux/types.h>
-#include <net/labx_avb/packet_engine_defs.h>
+#include <net/biamp_avb/packet_engine_defs.h>
 #ifdef CONFIG_LABX_AUDIO_DEPACKETIZER_DMA
 #include <linux/labx_dma.h>
 #endif

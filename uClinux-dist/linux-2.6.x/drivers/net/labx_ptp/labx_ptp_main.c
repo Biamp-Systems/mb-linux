@@ -772,18 +772,18 @@ static int ptp_probe(const char *name,
    * the Ptp_Hardware module by the platform - therefore this *must* have a
    * sane value!
    */
-  if((platformData->nominalIncrement.mantissa < LABX_PTP_RTC_INC_MIN) |
-     (platformData->nominalIncrement.mantissa > LABX_PTP_RTC_INC_MAX)) {
+  if((platformData->nominalIncrement.mantissa < PTP_RTC_INC_MIN) |
+     (platformData->nominalIncrement.mantissa > PTP_RTC_INC_MAX)) {
     returnValue = -EINVAL;
     printk(KERN_ERR "%s: Nominal RTC increment mantissa (%d) is out of range [%d, %d]\n",
            ptp->name, platformData->nominalIncrement.mantissa,
-           LABX_PTP_RTC_INC_MIN, LABX_PTP_RTC_INC_MAX);
+           PTP_RTC_INC_MIN, PTP_RTC_INC_MAX);
     goto unmap;
   }
   if((platformData->nominalIncrement.fraction & ~RTC_FRACTION_MASK) != 0) {
     returnValue = -EINVAL;
     printk(KERN_ERR "%s: Nominal RTC increment fraction (0x%08X) has > %d significant bits\n",
-           ptp->name, platformData->nominalIncrement.fraction, LABX_PTP_RTC_FRACTION_BITS);
+           ptp->name, platformData->nominalIncrement.fraction, PTP_RTC_FRACTION_BITS);
     goto unmap;
   }
   ptp->nominalIncrement.mantissa = platformData->nominalIncrement.mantissa;

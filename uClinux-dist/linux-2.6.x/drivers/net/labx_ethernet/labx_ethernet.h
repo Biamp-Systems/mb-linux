@@ -266,7 +266,7 @@ extern "C" {
 #include "xbasic_types.h"
 #include "xstatus.h"
 #include "labx_ethernet_hw.h"
-#include "net/labx_ethernet/labx_ethernet_defs.h"
+#include "net/biamp_ethernet/biamp_ethernet_defs.h"
 #include <linux/interrupt.h>
 
 /************************** Constant Definitions *****************************/
@@ -734,7 +734,7 @@ void labx_eth_PhyWrite(XLlTemac *InstancePtr, u32 PhyAddress, u32 RegisterNum,
 
 void labx_eth_UpdateMacFilters(XLlTemac *InstancePtr);
 
-extern int labx_eth_mdio_bus_init(struct device *dev, struct labx_eth_platform_data *pdata, XLlTemac *InstancePtr);
+extern int labx_eth_mdio_bus_init(struct device *dev, struct biamp_eth_platform_data *pdata, XLlTemac *InstancePtr);
 #ifdef __cplusplus
 }
 #endif

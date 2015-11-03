@@ -1,12 +1,13 @@
 /*
- *  include/linux/labx_tdm_analyzer.h
+ *  include/linux/tdm_analyzer.h
  *
- *  Lab X Technologies TDM analyzer driver
+ *  TDM analyzer driver
  *
  *  Written by Eldridge M. Mount IV (eldridge.mount@labxtechnologies.com)
  *  Written by Albert M. Hajjar (albert.hajjar@labxtechnologies.com)
  *
  *  Copyright (C) 2012 Lab X Technologies, All Rights Reserved.
+ *  Copyright (C) 2015 Biamp Systems, Inc., All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,8 +25,8 @@
  *
  */
 
-#ifndef _LABX_TDM_ANALYZER_DEFS_H_
-#define _LABX_TDM_ANALYZER_DEFS_H_
+#ifndef TDM_ANALYZER_DEFS_H_
+#define TDM_ANALYZER_DEFS_H_
 
 #include <linux/types.h>
 #include <linux/ioctl.h>

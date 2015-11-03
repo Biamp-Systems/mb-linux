@@ -31,7 +31,7 @@
 #include <linux/kdev_t.h>
 #include <linux/kthread.h>
 #include <linux/labx_dma.h>
-#include <linux/labx_dma_coprocessor_defs.h>
+#include <linux/dma_coprocessor_defs.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -98,14 +98,14 @@ static irqreturn_t labx_dma_interrupt(int irq, void *dev_id) {
 static struct genl_family events_genl_family = {
   .id      = GENL_ID_GENERATE,
   .hdrsize = 0,
-  .name    = LABX_DMA_EVENTS_FAMILY_NAME,
-  .version = LABX_DMA_EVENTS_FAMILY_VERSION,
-  .maxattr = LABX_DMA_EVENTS_A_MAX,
+  .name    = DMA_EVENTS_FAMILY_NAME,
+  .version = DMA_EVENTS_FAMILY_VERSION,
+  .maxattr = DMA_EVENTS_A_MAX,
 };
 
 /* Multicast groups */
 static struct genl_multicast_group labx_dma_mcast = {
-  .name = LABX_DMA_EVENTS_STATUS_GROUP,
+  .name = DMA_EVENTS_STATUS_GROUP,
 };
 
 /* Method to conditionally transmit a Netlink packet containing one or more
@@ -131,7 +131,7 @@ static int tx_netlink_status(struct labx_dma *dma) {
                           dma->netlinkSequence++, 
                           &events_genl_family, 
                           0, 
-                          LABX_DMA_EVENTS_C_STATUS_PACKETS);
+                          DMA_EVENTS_C_STATUS_PACKETS);
     if(msgHead == NULL) {
       returnValue = -ENOMEM;
       goto tx_failure;
@@ -141,7 +141,7 @@ static int tx_netlink_status(struct labx_dma *dma) {
      * message source.  The full ID is required since this driver can be used encapsulated 
      * within any number of more complex devices.
      */
-    returnValue = nla_put_u32(skb, LABX_DMA_EVENTS_A_DMA_DEVICE, new_encode_dev(dma->deviceNode));
+    returnValue = nla_put_u32(skb, DMA_EVENTS_A_DMA_DEVICE, new_encode_dev(dma->deviceNode));
     if(returnValue != 0) goto tx_failure;
 
     /* Set an attribute indicating whether the status FIFO overflowed before
@@ -152,19 +152,19 @@ static int tx_netlink_status(struct labx_dma *dma) {
     maskedFlags &= DMA_STAT_OVRFLW_IRQ;
     XIo_Out32(DMA_REGISTER_ADDRESS(dma, DMA_IRQ_FLAGS_REG), maskedFlags);
     returnValue = nla_put_u32(skb, 
-                              LABX_DMA_EVENTS_A_STATUS_OVERFLOW, 
+                              DMA_EVENTS_A_STATUS_OVERFLOW, 
                               ((maskedFlags != 0) ? DMA_STATUS_FIFO_OVERFLOW :
                                                     DMA_STATUS_FIFO_GOOD));
     if(returnValue != 0) goto tx_failure;
 
     /* Begin a nested attribute of status FIFO packets */
-    statusArray = nla_nest_start(skb, LABX_DMA_EVENTS_A_STATUS_ARRAY);
+    statusArray = nla_nest_start(skb, DMA_EVENTS_A_STATUS_ARRAY);
     if(statusArray == NULL) goto tx_failure;
 
     /* Determine how many packets will be written and record this */
     numStatusPackets = (dma->statusHead - dma->statusTail);
     if(numStatusPackets < 0) numStatusPackets += MAX_STATUS_PACKETS_PER_DGRAM;
-    returnValue = nla_put_u32(skb, LABX_DMA_STATUS_ARRAY_A_LENGTH, numStatusPackets);
+    returnValue = nla_put_u32(skb, DMA_STATUS_ARRAY_A_LENGTH, numStatusPackets);
     if(returnValue != 0) goto tx_failure;
 
     /* Iterate through the circular buffer of status packets until all have
@@ -178,16 +178,16 @@ static int tx_netlink_status(struct labx_dma *dma) {
       int32_t nestIndex;
 
       /* Each packet is itself a nested table of words; begin the nesting */
-      packetNesting = nla_nest_start(skb, LABX_DMA_STATUS_ARRAY_A_PACKETS);
+      packetNesting = nla_nest_start(skb, DMA_STATUS_ARRAY_A_PACKETS);
       if(packetNesting == NULL) goto tx_failure;
       
       /* Write the length of the packet and then its raw words */
       returnValue = nla_put_u32(skb, 
-                                LABX_DMA_STATUS_PACKET_A_LENGTH, 
+                                DMA_STATUS_PACKET_A_LENGTH, 
                                 statusPacket->packetLength);
       if(returnValue != 0) goto tx_failure;
 
-      nestIndex = LABX_DMA_STATUS_PACKET_A_WORDS;
+      nestIndex = DMA_STATUS_PACKET_A_WORDS;
       for(wordIndex = 0; wordIndex < statusPacket->packetLength; wordIndex++) {
         returnValue = nla_put_u32(skb, nestIndex++, statusPacket->packetData[wordIndex]);
         if(returnValue != 0) goto tx_failure;
