@@ -6,6 +6,7 @@
  *  Written by Chris Wulff (chris.wulff@labxtechnologies.com)
  *
  *  Copyright (C) 2009 Lab X Technologies LLC, All Rights Reserved.
+ *  Copyright (C) 2015 Biamp Systems, Inc., All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -91,6 +92,16 @@ typedef enum
 	eDMAStoreMasked = 1
 
 } EDMAStoreMask;
+
+typedef enum {
+  eDMAOffsetPure    = 0,
+  eDMAOffsetAddBase = 1,
+} EDMAOffsetType;
+
+typedef enum {
+  eDMAImmediatePure       = 0,
+  eDMAImmediateAddChannel = 1,
+} EDMAImmediateType;
   
 /* Definitions for instruction opcodes */
 #define DMA_OPCODE_NOP                    0x00
@@ -189,6 +200,7 @@ typedef enum
 #define  DMA_INDEX_SELECT_SHIFT(config)      (DMA_OPCODE_SHIFT(config) - config.indexSelectBits)
 #define   DMA_BRANCH_CONDITION_SHIFT(config) (DMA_INDEX_SELECT_SHIFT(config) - DMA_BRANCH_CONDITION_BITS)
 #define   DMA_LOGICAL_OP_SHIFT(config)       (DMA_INDEX_SELECT_SHIFT(config) - DMA_LOGICAL_OP_BITS)
+#define   DMA_ADD_CHANNEL_BIT(config)        (0x01 << DMA_INDEX_VALUE_BITS)
 #define   DMA_INDEX_VALUE_SHIFT(config)      (0)
 #define   DMA_INDEX_VALUE_MASK(config)       (((1<<DMA_INDEX_VALUE_BITS)-1)<<DMA_INDEX_VALUE_SHIFT(config))
 #define   DMA_SOURCE_SELECT_SHIFT(config)    (DMA_INDEX_SELECT_SHIFT(config) - config.sourceSelectBits)
@@ -225,11 +237,13 @@ static inline DMAInstruction DMA_NOP(DMAConfiguration config)
 /* Returns a LOAD_INDEX instruction */
 /* @param index_Select - Selects which of the index counters to load */
 /* @param index_Value  - Value to load into the index counter */
-static inline DMAInstruction DMA_LOAD_INDEX(DMAConfiguration config, EDMAIndex index_Select, uint32_t index_Value)
+static inline DMAInstruction DMA_LOAD_INDEX(DMAConfiguration config, EDMAIndex index_Select, uint32_t index_Value, EDMAImmediateType imm_type)
 {
-	return ((DMA_OPCODE_LOAD_INDEX << DMA_OPCODE_SHIFT(config)) |
-		(index_Select << DMA_INDEX_SELECT_SHIFT(config))    |
-		((index_Value << DMA_INDEX_VALUE_SHIFT(config))&DMA_INDEX_VALUE_MASK(config)));
+  return ((DMA_OPCODE_LOAD_INDEX << DMA_OPCODE_SHIFT(config)) |
+          (index_Select << DMA_INDEX_SELECT_SHIFT(config))    |
+          ((imm_type == eDMAImmediatePure) ? 0 : DMA_ADD_CHANNEL_BIT(config)) |
+          ((index_Value << DMA_INDEX_VALUE_SHIFT(config)) & 
+           DMA_INDEX_VALUE_MASK(config)));
 }
   
 /* Returns a LOAD_INDEX_INDIRECT instruction */
@@ -251,7 +265,7 @@ static inline DMAInstruction DMA_LOAD_INDEX_INDIRECT(DMAConfiguration config, ED
 
 /* Returns a STORE_INDEX_INDIRECT instruction */
 /* @param index_Select   - Index counter to use as an offset to the store address */
-/* @param source_Select - Which RAM block to load from */
+/* @param source_Select  - Which RAM block to store to */
 /* @param index_Select_2 - Selects which of the index counters to store */
 /* @param store_Address  - Base location to address the RAM block */
 /* @param interlock      - Hold the parameter interlock or not */
@@ -375,6 +389,7 @@ static inline DMAInstruction DMA_LOAD_CACHE_BASE(DMAConfiguration config, uint32
 /* for subsequent data transfers. */
 /* @param load_Address - Base location of the address and modulus mask to be loaded from microcode RAM */
 /* @param source_Select - Which RAM block to load from */
+/* @param add_Base      - Whether to add a previously-loaded base address or not */
 /* @param index_Select - Index counter to use as an offset to the base address */
 static inline DMAInstruction DMA_LOAD_CACHE_OFFSET(DMAConfiguration config, uint32_t load_Address,
 	EDMASource source_Select, int add_Base, EDMAIndex index_Select)
@@ -470,6 +485,7 @@ static inline DMAInstruction DMA_LOAD_BUFFER_BASE(DMAConfiguration config, uint3
 /* for subsequent data transfers. */
 /* @param load_Address - Base location of the address and modulus mask to be loaded from microcode RAM */
 /* @param source_Select - Which RAM block to load from */
+/* @param add_Base      - Whether to add a previously-loaded base address or not */
 /* @param index_Select - Index counter to use as an offset to the base address */
 static inline DMAInstruction DMA_LOAD_BUFFER_OFFSET(DMAConfiguration config, uint32_t load_Address,
 	EDMASource source_Select, int add_Base, EDMAIndex index_Select)
@@ -532,10 +548,12 @@ static inline DMAInstruction DMA_INC_BUFFER_ADDRESS(DMAConfiguration config, EDM
 /* address, however, is incremented by its 'A' increment as soon as the transfer has been acknowledged, */
 /* and does not undergo any additional auto-increments.  As such, it may be manipulated, stored, etc. */
 /* while the transfer is in progress. */
-static inline DMAInstruction DMA_BUFFER_READ(DMAConfiguration config, EDMAIncB incB, uint32_t transfer_Length)
+static inline DMAInstruction DMA_BUFFER_READ(DMAConfiguration config, EDMAIncB incB,
+                                             EDMABlockCount bc, uint32_t transfer_Length)
 {
 	return ((DMA_OPCODE_BUFFER_READ << DMA_OPCODE_SHIFT(config)) |
 		(incB << DMA_INCREMENT_B_SHIFT(config)) |
+          (bc << DMA_TRANSFER_ALU_BC_SHIFT(config)) |
 		(transfer_Length << DMA_CODE_ADDRESS_SHIFT(config)));
 }
   
@@ -574,7 +592,12 @@ static inline DMAInstruction DMA_BUFFER_INCREMENT(DMAConfiguration config, int32
 	return (increment_Value);
 }
   
-/* Returns a JOIN_TRANSFER instruction */
+/* Returns a JOIN_TRANSFER instruction
+ *
+ * At least one instruction cycle must separate a DMA_BUFFER_READ / _WRITE
+ * and this instruction to ensure that a new transfer has been registered
+ * in the event that one is not already pending.
+ */
 static inline DMAInstruction DMA_JOIN_TRANSFER(DMAConfiguration config)
 {
 	return (DMA_OPCODE_JOIN_TRANSFER << DMA_OPCODE_SHIFT(config));
@@ -688,6 +711,8 @@ static inline DMAInstruction DMA_PUSH_STATUS_ALU(DMAConfiguration config,
 
 /* DMA channel control */
 
+#define DMA_CHANNEL_FREE_RUN  (0x80000000)
+
 #define DMA_IOC_START_CHANNEL  _IOW(DMA_IOC_CHAR, 0x05, uint32_t)
 #define DMA_IOC_STOP_CHANNEL   _IOW(DMA_IOC_CHAR, 0x06, uint32_t)
 
@@ -710,6 +735,8 @@ typedef struct {
 #define DMA_IOC_SET_VECTOR     _IOW(DMA_IOC_CHAR, 0x09, uint32_t)
 
 typedef struct {
+  uint32_t versionMajor;
+  uint32_t versionMinor;
   uint32_t indexCounters;
   uint32_t dmaChannels;
   uint32_t alus;
@@ -717,12 +744,20 @@ typedef struct {
   uint32_t codeAddressBits;
   uint32_t microcodeWords;
   uint32_t hasStatusFifo;
+  uint32_t dataByteWidth;
+  uint32_t parameterMap;
 } DMACapabilities;
 
 #define DMA_IOC_GET_CAPS      _IOR(DMA_IOC_CHAR, 0x0A, DMACapabilities)
 
+/* Enumerated values for status FIFO availability */
 #define DMA_NO_STATUS_FIFO  (0)
 #define DMA_HAS_STATUS_FIFO (1)
+
+/* Enumerated values for different parameter address maps */
+#define DMA_PARAM_MAP_UNKNOWN   0
+#define DMA_PARAM_MAP_EXTERNAL  1
+#define DMA_PARAM_MAP_SPLIT     2
 
 /* Indices for identifying memory resources */
 #define DMA_ADDRESS_RANGE_RESOURCE    (0)

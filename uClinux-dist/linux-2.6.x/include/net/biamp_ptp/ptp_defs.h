@@ -6,6 +6,7 @@
  *  Written by Eldridge M. Mount IV (eldridge.mount@labxtechnologies.com)
  *
  *  Copyright (C) 2010 Lab X Technologies LLC, All Rights Reserved.
+ *  Copyright (C) 2015 Biamp Systems, Inc., All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +31,7 @@
 
 /* Bytes per MAC address */
 #define MAC_ADDRESS_BYTES  (6)
+#define IPV4_ADDRESS_BYTES   (4)
 
 /* PTP data types and constant definitions */
 typedef struct {
@@ -63,6 +65,17 @@ typedef enum {
 #define PTP_DELAY_MECHANISM_E2E       (0x01)
 #define PTP_DELAY_MECHANISM_P2P       (0x02)
 #define PTP_DELAY_MECHANISM_DISABLED  (0xFE)
+
+/* Packet Type */
+typedef enum {
+  PTP_Layer2=0,
+  PTP_IPv4=1,
+} PtpPacketType;
+
+typedef enum {
+  PTP_AS_Profile=0,
+  PTP_Default_Profile=1
+} PtpProfile;
 
 /* I/O control commands and structures for the PTP driver */
 #define IOC_PTP_STOP_SERVICE    _IO('p', 0x10)
@@ -109,6 +122,8 @@ typedef enum {
 typedef uint8_t PtpClockIdentity[PTP_CLOCK_IDENTITY_BYTES];
 
 typedef struct {
+  /* Index of the domain (locally) */
+  uint32_t         domainIndex;
   /* Various PTP-defined properties */
   uint8_t          domainNumber;
   int16_t          currentUtcOffset;
@@ -124,6 +139,9 @@ typedef struct {
   uint32_t         lockTimeMsec;
   uint32_t         unlockThreshNsec;
   uint32_t         unlockTimeMsec;
+  PtpPacketType    packetType;
+  uint8_t          dscp;
+  PtpProfile       profile;
 } PtpProperties;
 #define IOC_PTP_GET_PROPERTIES  _IOR('p', 0x12, PtpProperties)
 #define IOC_PTP_SET_PROPERTIES  _IOW('p', 0x13, PtpProperties)
@@ -137,6 +155,9 @@ typedef struct {
 
   /* Steps removed from the master */
   uint16_t stepsRemoved;
+
+  /* If using UDP/IP transport, this is the IP address of this port */
+  uint8_t ipv4Address[IPV4_ADDRESS_BYTES];
 
 } PtpPortProperties;
 #define IOC_PTP_GET_PORT_PROPERTIES  _IOWR('p', 0x14, PtpPortProperties)
