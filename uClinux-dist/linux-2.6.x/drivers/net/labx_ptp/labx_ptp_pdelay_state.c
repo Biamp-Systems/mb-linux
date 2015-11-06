@@ -27,7 +27,7 @@
 #include "labx_ptp.h"
 
 /* Define this to get some extra debug on path delay messages */
-/* #define PATH_DELAY_DEBUG */
+//#define PATH_DELAY_DEBUG
 #ifdef PATH_DELAY_DEBUG
 unsigned char *pdelay_state_strings[] = { "NOT_ENABLED", 
                                         "INITIAL_SEND_PDELAY_REQ",
@@ -116,7 +116,11 @@ static void computePropTime(struct ptp_device *ptp, uint32_t port)
     nsResponder = ((uint64_t)difference.secondsLower) * 1000000000ULL + (uint64_t)difference.nanoseconds;
     nsRequester = ((uint64_t)difference2.secondsLower) * 1000000000ULL + (uint64_t)difference2.nanoseconds;
 
-    ptp->ports[port].neighborPropDelay = (((((uint64_t)ptp->ports[port].neighborRateRatio) * nsRequester) >> 31) - nsResponder) >> 1;
+    if(nsResponder < ((((uint64_t)ptp->ports[port].neighborRateRatio) * nsRequester) >> 31) + 1)
+      ptp->ports[port].neighborPropDelay = (((((uint64_t)ptp->ports[port].neighborRateRatio) * nsRequester) >> 31) - nsResponder) >> 1;
+    else
+      ptp->ports[port].neighborPropDelay = 1;
+
 
 #ifdef PATH_DELAY_DEBUG
     printk("Responder delta: %08X%08X.%08X (%llu ns)\n", difference.secondsUpper,
@@ -176,7 +180,10 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
       {
         ptp->ports[port].lostResponses++;
 #ifdef PATH_DELAY_DEBUG
-        printk("lostResponses=%d",ptp->ports[port].lostResponses);
+        if(port == 0)
+        {
+          printk("Increment lostResponses=%d\n",ptp->ports[port].lostResponses);
+        }
 #endif
       }
       else
@@ -186,7 +193,8 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
         /* Force neighborPropDelay to out of threshold to avoid accidentally going back to asCapable too soon */
         ptp->ports[port].neighborPropDelay = ptp->ports[port].neighborPropDelayThresh+1;
 #ifdef PATH_DELAY_DEBUG
-        printk("Too many lost response lostResponses=%d",ptp->ports[port].lostResponses);
+        if(port == 0)
+          printk("Too many lost response lostResponses=%d\n",ptp->ports[port].lostResponses);
 #endif
       }
       break;
@@ -257,6 +265,14 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
       {
         computePropTime(ptp, port);
       }
+
+#ifdef PATH_DELAY_DEBUG
+      if(port == 0)
+      {
+        printk("Resetting lost response count\n");
+      }
+#endif
+
       ptp->ports[port].lostResponses = 0;
       ptp->ports[port].isMeasuringDelay = TRUE;
 
