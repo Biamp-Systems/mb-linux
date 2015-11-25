@@ -264,7 +264,8 @@
 /* 802.1AS MDPdelayReq state machine states */
 typedef enum { MDPdelayReq_NOT_ENABLED, MDPdelayReq_INITIAL_SEND_PDELAY_REQ,
   MDPdelayReq_RESET, MDPdelayReq_SEND_PDELAY_REQ, MDPdelayReq_WAITING_FOR_PDELAY_RESP,
-  MDPdelayReq_WAITING_FOR_PDELAY_RESP_FOLLOW_UP, MDPdelayReq_WAITING_FOR_PDELAY_INTERVAL_TIMER
+  MDPdelayReq_WAITING_FOR_PDELAY_RESP_FOLLOW_UP, MDPdelayReq_WAITING_FOR_PDELAY_INTERVAL_TIMER,
+  MDPdelayReq_LOST_RESPONSE
 } MDPdelayReq_State_t;
 
 /* 802.1AS LinkDelaySyncIntervalSettings state machine states */
@@ -292,6 +293,19 @@ typedef enum { PortRoleSelection_INIT_BRIDGE, PortRoleSelection_ROLE_SELECTION
   SIGNED_SHIFT((1000/PTP_TIMER_TICK_MS), ((ptp)->ports[(port)].currentLogAnnounceInterval))
 #define SYNC_INTERVAL_TICKS(ptp, port)       \
   SIGNED_SHIFT((1000/PTP_TIMER_TICK_MS), ((ptp)->ports[(port)].currentLogSyncInterval))
+#define MAX_ANNOUNCE_INTERVAL_TICKS(PTP,PORT) \
+  (((SIGNED_SHIFT(1000, (PTP)->ports[(PORT)].currentLogAnnounceInterval)*(PTP)->ports[(PORT)].announceReceiptTimeout)+PTP_TIMER_TICK_MS-1) / PTP_TIMER_TICK_MS)
+#define MAX_SYNC_INTERVAL_TICKS_PLUS_50_PERCENT
+#ifdef MAX_SYNC_INTERVAL_TICKS_PLUS_50_PERCENT
+#define MAX_SYNC_INTERVAL_TICKS(ptp, port) \
+        (( \
+           (((SIGNED_SHIFT(1000, ptp->ports[port].currentLogSyncInterval)*ptp->ports[port].syncReceiptTimeout)+PTP_TIMER_TICK_MS-1) / PTP_TIMER_TICK_MS) \
+           * 3) \
+         /2)
+#else
+#define MAX_SYNC_INTERVAL_TICKS(ptp, port) \
+        (((SIGNED_SHIFT(1000, ptp->ports[port].currentLogSyncInterval)*ptp->ports[port].syncReceiptTimeout)+PTP_TIMER_TICK_MS-1) / PTP_TIMER_TICK_MS)
+#endif
 #define PDELAY_REQ_INTERVAL_TICKS(ptp, port) \
   SIGNED_SHIFT((1000/PTP_TIMER_TICK_MS), ((ptp)->ports[(port)].currentLogPdelayReqInterval))
 
@@ -447,6 +461,7 @@ struct ptp_port {
   uint32_t pdelayResponses;
   uint32_t multiplePdelayResponses;
   uint32_t multiplePdelayTimer;
+  uint32_t prevPdelayReqSequenceId;
 
   /* 802.1AS LinkDelaySyncIntervalSetting variables (11.2.17.1) */
   LinkDelaySyncIntervalSetting_State_t linkDelaySyncIntervalSetting_State;
@@ -468,6 +483,7 @@ struct ptp_port {
 
   /* pdelay response variables */
   uint8_t lastPeerRequestPortId[PORT_ID_BYTES];
+  uint8_t lastRxRespSourcePortId[PORT_ID_BYTES];
 
   /* sync/fup response variables */
   uint8_t syncSourcePortId[PORT_ID_BYTES];
@@ -554,7 +570,7 @@ struct ptp_device {
   /* RTC control loop persistent values */
   int64_t  integral;
   int64_t  zeroCrossingIntegral;
-  int32_t  derivative;
+  int64_t  derivative;
   int32_t  previousOffset;
   uint32_t prevBaseRtcIncrement;
   uint32_t prevAppliedRtcIncrement;

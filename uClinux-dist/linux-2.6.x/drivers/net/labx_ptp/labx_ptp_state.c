@@ -70,7 +70,10 @@ void labx_ptp_timer_state_task(unsigned long data) {
       }
       else {
         ptp->ports[i].multiplePdelayTimer = 0;
+      }
+      if(ptp->ports[i].multiplePdelayTimer==0) {
         printk("Re-enabled ptp on port %d after 5 minutes\n", i+1);
+        ptp->ports[i].portEnabled = TRUE;
       }
     }
   }
@@ -105,7 +108,8 @@ void labx_ptp_timer_state_task(unsigned long data) {
                 ptp->ports[i].newInfo = FALSE;
                 transmit_announce(ptp, i);
             }
-
+            if (ptp->gmPresent)
+            {
             ptp->ports[i].syncCounter += timerTicks;
             if(ptp->ports[i].syncCounter >= SYNC_INTERVAL_TICKS(ptp, i)) {
                 ptp->ports[i].syncCounter = 0;
@@ -125,6 +129,7 @@ void labx_ptp_timer_state_task(unsigned long data) {
                         set_rtc_increment(ptp, &ptp->nominalIncrement);
                     }
                 }
+            }
             }
             break;
 
@@ -276,8 +281,7 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
     // Extract new syncInterval (10.2.4.5) from logMessageInterval (10.2.4.2).
     ptp->ports[port].currentLogSyncInterval = get_logMessageInterval_field(ptp, port, rxBuffer);
 
-    // [REMOVED for certifcation] TODO: Sync * 2 is a workaround for Titanium. Remove when Titanium stops dropping sync
-    ptp->ports[port].syncReceiptTimeoutTime = SYNC_INTERVAL_TICKS(ptp, port) * ptp->ports[port].syncReceiptTimeout;
+	  ptp->ports[port].syncReceiptTimeoutTime = MAX_SYNC_INTERVAL_TICKS(ptp,port);
 
     /* This is indeed a SYNC from the present master.  Capture the hardware timestamp
      * at which we received it, and hang on to its sequence ID for matching to the
@@ -305,19 +309,21 @@ static void process_rx_sync(struct ptp_device *ptp, uint32_t port, uint8_t *rxBu
       PtpTime syncRxTimestamp;
       PtpTime linkDelay;
       get_local_hardware_timestamp(ptp, port, RECEIVED_PACKET, rxBuffer, &syncRxTimestamp);
-      linkDelay.secondsUpper = 0;
-      linkDelay.secondsLower = 0;
-      linkDelay.nanoseconds = ptp->ports[port].neighborPropDelay;
-      for (i=0; i<ptp->numPorts; i++) {
-	if (ptp->ports[i].selectedRole == PTP_MASTER) {
-          // Save the received time (with link delay) for later calculation of residency time
-          timestamp_difference(&syncRxTimestamp, &linkDelay, &ptp->ports[i].syncRxTimestamp);
-          get_source_port_id(ptp, port, RECEIVED_PACKET, rxBuffer, &ptp->ports[i].syncSourcePortId[0]);
-          ptp->ports[i].syncSequenceId = ptp->ports[port].syncSequenceId;
-          transmit_sync(ptp, i);
-	}
-      }
-    } /* if(received sync on SLAVE port) */
+      if(ptp->ports[port].syncSequenceIdValid) {
+        linkDelay.secondsUpper = 0;
+        linkDelay.secondsLower = 0;
+        linkDelay.nanoseconds = ptp->ports[port].neighborPropDelay;
+        for (i=0; i<ptp->numPorts; i++) {
+          if (ptp->ports[i].selectedRole == PTP_MASTER) {
+            // Save the received time (with link delay) for later calculation of residency time
+            timestamp_difference(&syncRxTimestamp, &linkDelay, &ptp->ports[i].syncRxTimestamp);
+            get_source_port_id(ptp, port, RECEIVED_PACKET, rxBuffer, &ptp->ports[i].syncSourcePortId[0]);
+            ptp->ports[i].syncSequenceId = ptp->ports[port].syncSequenceId;
+            transmit_sync(ptp, i);
+	        }
+        }
+      } /* if(syncSequenceIdValid) */
+    }/* if(received sync on SLAVE port) */
   }
 }
 
@@ -811,6 +817,8 @@ void init_state_machines(struct ptp_device *ptp) {
 
     pPort->syncReceiptTimeout = 3;
     pPort->announceReceiptTimeout = 3;
+
+    pPort->multiplePdelayTimer = 0;
 
     /* peer delay request state machine initialization */
     pPort->mdPdelayReq_State    = MDPdelayReq_NOT_ENABLED;
