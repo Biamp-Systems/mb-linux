@@ -118,12 +118,11 @@ static int labx_local_audio_ioctl_cdev(struct inode *inode, struct file *filp,
         printk("CFU failed\n");
         return(-EFAULT);
       }
-			
+
       if (mapping.channel >= local_audio_pdev->numChannels) {
         printk("Channel check failed: %d, %d\n", mapping.channel, local_audio_pdev->numChannels);
         return(-EINVAL);
       }
-
       XIo_Out32(LOCAL_AUDIO_REGISTER_BASE(local_audio_pdev, LOCAL_AUDIO_CHANNEL_REG + mapping.channel),
                 mapping.streams);
     }
@@ -132,7 +131,6 @@ static int labx_local_audio_ioctl_cdev(struct inode *inode, struct file *filp,
   case IOC_LA_GET_CHANNEL_MAPPING:
     {
       struct LocalAudioChannelMapping mapping;
-
       if(copy_from_user(&mapping, (void __user*)arg, sizeof(mapping)) != 0) {
         return(-EFAULT);
       }
