@@ -110,7 +110,12 @@ static void computePropTime(struct ptp_device *ptp, uint32_t port)
     if(nsResponder < ((((uint64_t)ptp->ports[port].neighborRateRatio) * nsRequester) >> 31) + 1)
       ptp->ports[port].neighborPropDelay = (((((uint64_t)ptp->ports[port].neighborRateRatio) * nsRequester) >> 31) - nsResponder) >> 1;
     else
-      ptp->ports[port].neighborPropDelay = 1;
+    {
+      ptp->ports[port].neighborPropDelay = ((((((uint64_t)ptp->ports[port].neighborRateRatio) * nsRequester) >> 31) - nsResponder) >> 1) + 50;
+      #ifdef PATH_DELAY_DEBUG
+      printk("Negative Propagation delay detected, Using Hack to add 50ns\n");
+      #endif
+    }
 
 
 #ifdef PATH_DELAY_DEBUG
@@ -131,7 +136,7 @@ static void computePropTime(struct ptp_device *ptp, uint32_t port)
 static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t port, MDPdelayReq_State_t newState)
 {
 #ifdef PATH_DELAY_DEBUG
-  printk("MDPdelayReq: Set State %d (port index %d)\n", newState, port);
+   printk("MDPdelayReq: Set State %d (port index %d)\n", newState, port);
 #endif
 
   ptp->ports[port].mdPdelayReq_State = newState;
@@ -248,7 +253,7 @@ static void MDPdelayReq_StateMachine_SetState(struct ptp_device *ptp, uint32_t p
           for (i=0; i<PORT_ID_BYTES; i++) printk("%02X", ptp->ports[port].lastRxRespSourcePortId[i]);
         printk("\n");
         printk("AS CHECK: thisClock:     ");
-        for (i=0; i<PTP_CLOCK_IDENTITY_CHARS; i++) printk("%02X", ptp->properties.grandmasterIdentity[i]);
+        /* for (i=0; i<PTP_CLOCK_IDENTITY_CHARS; i++) printk("%02X", ptp->properties.grandmasterIdentity[i]); */
         printk("\n");
       }
 #endif
@@ -330,7 +335,7 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
     memset(rxFUPSourcePortId, 0, PORT_ID_BYTES);
     memset(rxRespSourcePortId, 0, PORT_ID_BYTES);
 
-      /* Grab some inforomation needed for comparisons if we got a PDelay Response */
+      /* Grab some information needed for comparisons if we got a PDelay Response */
     if (ptp->ports[port].rcvdPdelayResp)
     {
       get_rx_requesting_port_id(ptp, port, ptp->ports[port].rcvdPdelayRespPtr, rxRequestingPortId);
@@ -338,7 +343,7 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
       get_source_port_id(ptp, port, TRANSMITTED_PACKET, txBuffer, txRequestingPortId);
       rxSequenceId = get_sequence_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespPtr);
       txSequenceId = get_sequence_id(ptp, port, TRANSMITTED_PACKET, txBuffer);
-        get_source_port_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespPtr, rxRespSourcePortId);
+      get_source_port_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespPtr, rxRespSourcePortId);
     }
     if (ptp->ports[port].rcvdPdelayRespFollowUp)
     {
@@ -347,7 +352,7 @@ void MDPdelayReq_StateMachine(struct ptp_device *ptp, uint32_t port)
       get_source_port_id(ptp, port, TRANSMITTED_PACKET, txBuffer, txFUPRequestingPortId);
       rxFUPSequenceId = get_sequence_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespFollowUpPtr);
       txFUPSequenceId = get_sequence_id(ptp, port, TRANSMITTED_PACKET, txBuffer);
-        get_source_port_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespFollowUpPtr, rxFUPSourcePortId);
+      get_source_port_id(ptp, port, RECEIVED_PACKET, ptp->ports[port].rcvdPdelayRespFollowUpPtr, rxFUPSourcePortId);
     }
 
       prevState = ptp->ports[port].mdPdelayReq_State;
