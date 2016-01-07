@@ -203,6 +203,7 @@ static void PortAnnounceInformation_StateMachine_SetState(struct ptp_device *ptp
     case PortAnnounceInformation_BEGIN:
     case PortAnnounceInformation_DISABLED:
       pPort->rcvdMsg                = FALSE;
+      pPort->announceCounter        = 0;
       pPort->announceTimeoutCounter = 0;
       pPort->infoIs                 = InfoIs_Disabled;
       pPort->reselect               = TRUE;
@@ -310,13 +311,13 @@ void PortAnnounceInformation_StateMachine(struct ptp_device *ptp, uint32_t port)
             PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_RECEIVE);
           } else {
             int syncTimeout = (pPort->syncTimeoutCounter >= pPort->syncReceiptTimeoutTime);
-            int announceTimeout = (pPort->announceTimeoutCounter >= ANNOUNCE_INTERVAL_TICKS(ptp, port) * pPort->announceReceiptTimeout);
+            int announceTimeout = (pPort->announceTimeoutCounter > MAX_ANNOUNCE_INTERVAL_TICKS(ptp,port));
             if ((pPort->infoIs == InfoIs_Received) &&
                 (announceTimeout || (syncTimeout && ptp->gmPresent)) &&
                 !pPort->updtInfo && !pPort->rcvdMsg) {
 
-              BMCA_DBG("Announce AGED: (announce %d >= %d || sync %dms > %dms)\n",
-                pPort->announceTimeoutCounter, ANNOUNCE_INTERVAL_TICKS(ptp, port) * pPort->announceReceiptTimeout,
+              BMCA_DBG("Announce AGED: (announce 10ms ticks %d > %d || sync 10ms ticks %d > %d)\n",
+                pPort->announceTimeoutCounter, MAX_ANNOUNCE_INTERVAL_TICKS(ptp,port),
                 pPort->syncTimeoutCounter, pPort->syncReceiptTimeoutTime);
 
               PortAnnounceInformation_StateMachine_SetState(ptp, port, PortAnnounceInformation_AGED);
@@ -451,7 +452,8 @@ static void updtRolesTree(struct ptp_device *ptp)
         if (ptp->gmPriority == &pPort->gmPathPriority) {
           pPort->selectedRole = PTP_SLAVE;
           pPort->updtInfo = FALSE;
-        } else if (REPLACE_PRESENT_MASTER == bmca_comparison(&pPort->portPriority, &pPort->masterPriority)) {
+        } else if ((REPLACE_PRESENT_MASTER == bmca_comparison(&pPort->portPriority, &pPort->masterPriority)) ||
+                   (ptp->gmPriority == &ptp->systemPriority)) {
           pPort->selectedRole = PTP_MASTER;
           pPort->pathTraceLength = 1;
           memcpy(pPort->pathTrace[0], ptp->systemPriority.rootSystemIdentity.clockIdentity, sizeof(PtpClockIdentity));
@@ -470,10 +472,9 @@ static void updtRolesTree(struct ptp_device *ptp)
       ptp->lastGmPhaseChange.middle = 0;
       ptp->lastGmPhaseChange.lower = 0;
       if(ptp->masterRateRatioValid) {
-        uint64_t result = (ptp->nominalIncrement.mantissa << RTC_MANTISSA_SHIFT) | (ptp->nominalIncrement.fraction & RTC_FRACTION_MASK);
-        result = result << 33;
-        result = result / ptp->masterRateRatio;
-        result = result - (1ull << 32);
+         uint64_t result = 1ull << 63;
+         result /= ptp->masterRateRatio;
+         result -= (1ull << 32);
         ptp->lastGmFreqChange = (uint32_t)(result << 9);
       } else {
         ptp->lastGmFreqChange = 0;

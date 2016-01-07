@@ -226,11 +226,23 @@ void get_hardware_timestamp(struct ptp_device *ptp,
 
   if (bufferDirection == TRANSMITTED_PACKET) {
     /* Add the MAC latency and the PHY latency */
+    if(&ptp->ports[port].txPhyMacDelay<0) {
+        ptp->ports[port].txPhyMacDelay.nanoseconds=-ptp->ports[port].txPhyMacDelay.nanoseconds; 
+        timestamp_difference(&tempTimestamp, &ptp->ports[port].txPhyMacDelay, timestamp);
+        ptp->ports[port].txPhyMacDelay.nanoseconds=-ptp->ports[port].txPhyMacDelay.nanoseconds; 
+    } else {
     timestamp_sum(&tempTimestamp, &ptp->ports[port].txPhyMacDelay, timestamp);
+    }
   } else {
     /* Subtract the MAC latency and the PHY latency */
+    if(&ptp->ports[port].rxPhyMacDelay<0) {
+        ptp->ports[port].rxPhyMacDelay.nanoseconds=-ptp->ports[port].rxPhyMacDelay.nanoseconds; 
+        timestamp_sum(&tempTimestamp, &ptp->ports[port].rxPhyMacDelay, timestamp);
+        ptp->ports[port].rxPhyMacDelay.nanoseconds=-ptp->ports[port].rxPhyMacDelay.nanoseconds; 
+    } else {
     timestamp_difference(&tempTimestamp, &ptp->ports[port].rxPhyMacDelay, timestamp);
   }
+}
 }
 
 /* Gets the local hardware timestamp located within the passed packet buffer.
@@ -262,11 +274,23 @@ void get_local_hardware_timestamp(struct ptp_device *ptp,
 
   if (bufferDirection == TRANSMITTED_PACKET) {
     /* Add the MAC latency and the PHY latency */
+    if(&ptp->ports[port].txPhyMacDelay<0) {
+        ptp->ports[port].txPhyMacDelay.nanoseconds=-ptp->ports[port].txPhyMacDelay.nanoseconds; 
+        timestamp_difference(&tempTimestamp, &ptp->ports[port].txPhyMacDelay, timestamp);
+        ptp->ports[port].txPhyMacDelay.nanoseconds=-ptp->ports[port].txPhyMacDelay.nanoseconds; 
+    } else {
     timestamp_sum(&tempTimestamp, &ptp->ports[port].txPhyMacDelay, timestamp);
+    }
   } else {
     /* Subtract the MAC latency and the PHY latency */
+    if(&ptp->ports[port].rxPhyMacDelay<0) {
+        ptp->ports[port].rxPhyMacDelay.nanoseconds=-ptp->ports[port].rxPhyMacDelay.nanoseconds; 
+        timestamp_sum(&tempTimestamp, &ptp->ports[port].rxPhyMacDelay, timestamp);
+        ptp->ports[port].rxPhyMacDelay.nanoseconds=-ptp->ports[port].rxPhyMacDelay.nanoseconds; 
+    } else {
     timestamp_difference(&tempTimestamp, &ptp->ports[port].rxPhyMacDelay, timestamp);
   }
+}
 }
 
 /* Transmits the packet within the specified buffer.  The first word of the
