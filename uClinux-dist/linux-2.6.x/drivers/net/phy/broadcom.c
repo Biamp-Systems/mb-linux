@@ -627,6 +627,35 @@ static int bcm54xx_config_init(struct phy_device *phydev)
 	return 0;
 }
 
+static int bcm54610_config_init(struct phy_device *phydev)
+{
+  int err, reg;
+
+  err = bcm54xx_config_init(phydev);
+
+  /* force LED3 to be Activity/Link, rather than just activity */
+  /* reg 10h, bit5 = 0 */
+  reg = phy_read(phydev, MII_BCM54XX_ECR);
+  reg &= ~(0x01 << 5);
+  phy_write(phydev, MII_BCM54XX_ECR, reg);
+
+  /* reg 1Ch, shadow 01001b, bit 4 = 1 */
+#define BCM54XX_SHD_LEDCONTROL (0x09)
+  reg = bcm54xx_shadow_read (phydev, BCM54XX_SHD_LEDCONTROL);
+  reg |= (0x1 << 4);
+  bcm54xx_shadow_write(phydev, BCM54XX_SHD_LEDCONTROL, reg);
+
+  /* force signal LED1 to be LINKSPD[2]
+  /* reg 1Ch, shadow 01101b, bits 3:0 = 0001 */
+#define BCM54XX_SHD_LEDSELECTOR_1 (0x0D)
+  reg = bcm54xx_shadow_read (phydev, BCM54XX_SHD_LEDSELECTOR_1);
+  reg &= ~(0xf);
+  reg |= (0x1);
+  bcm54xx_shadow_write(phydev, BCM54XX_SHD_LEDSELECTOR_1, reg);
+
+  return err;
+}
+
 static int bcm5482_config_init(struct phy_device *phydev)
 {
 	int err, reg;
@@ -1064,7 +1093,7 @@ static struct phy_driver bcm54610_driver = {
 	.features	= PHY_GBIT_FEATURES |
 			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
-	.config_init	= bcm54xx_config_init,
+	.config_init	= bcm54610_config_init,
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
 	.ack_interrupt	= bcm54xx_ack_interrupt,
