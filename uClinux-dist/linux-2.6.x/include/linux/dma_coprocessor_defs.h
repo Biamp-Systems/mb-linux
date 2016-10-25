@@ -175,12 +175,15 @@ typedef enum
 /* Constants for the bit flags that can be passed into the address generator opcodes */
 typedef enum
 {
-	DMA_ADDRESS_LOAD_BASE        = 0x10, /* Load the base address */
-	DMA_ADDRESS_LOAD_OFFSET      = 0x08, /* Load the offset (no base address) */
-	DMA_ADDRESS_LOAD_INDEX       = 0x04, /* Load the index */
-	DMA_ADDRESS_LOAD_SIZE        = 0x02, /* Load the block size */
-	DMA_ADDRESS_ADD_BASE         = 0x01, /* Add the existing base/index */
-	DMA_ADDRESS_LOAD_OFFSET_BASE = 0x09, /* Load the offset and add the existing base/index */
+	DMA_ADDRESS_LOAD_BASE               = 0x20, /* Load the base address */
+	DMA_ADDRESS_LOAD_OFFSET             = 0x10, /* Load the offset (no base address) */
+	DMA_ADDRESS_LOAD_INDEX              = 0x08, /* Load the index */
+	DMA_ADDRESS_LOAD_SIZE               = 0x04, /* Load the block size */
+	DMA_ADDRESS_ADD_BASE                = 0x02, /* Add the existing base/index */
+	DMA_ADDRESS_MASK_OFFSET             = 0x01, /* Mask the offset */
+	DMA_ADDRESS_LOAD_OFFSET_BASE        = 0x12, /* Load the offset and add the existing base/index */
+	DMA_ADDRESS_LOAD_OFFSET_MASKED      = 0x11,
+	DMA_ADDRESS_LOAD_OFFSET_MASKED_BASE = 0x13, /* Load/mask the offset and add the existing base/index */
 
 } EDMAAddressFlags;
 
@@ -210,6 +213,7 @@ typedef enum
 #define      DMA_LOAD_INDEX_SHIFT(config)    (DMA_LOAD_OFFSET_SHIFT(config)-1)
 #define       DMA_LOAD_SIZE_SHIFT(config)    (DMA_LOAD_INDEX_SHIFT(config)-1)
 #define        DMA_ADD_BASE_SHIFT(config)    (DMA_LOAD_SIZE_SHIFT(config)-1)
+#define         DMA_MASK_OFFSET_SHIFT(config) (DMA_ADD_BASE_SHIFT(config)-1)
 #define    DMA_INDEX_SELECT_2_SHIFT(config)  (DMA_SOURCE_SELECT_SHIFT(config) - config.indexSelectBits)
 #define    DMA_ALU_OPCODE_SHIFT(config)      (DMA_SOURCE_SELECT_SHIFT(config) - DMA_ALU_OPCODE_BITS)
 #define     DMA_ALU_SELECT_SHIFT(config)     (DMA_ALU_OPCODE_SHIFT(config) - config.aluSelectBits)
@@ -370,7 +374,7 @@ static inline DMAInstruction DMA_LOAD_CACHE_ADDRESS(DMAConfiguration config, uin
 	return ((DMA_OPCODE_LOAD_CACHE_ADDRESS << DMA_OPCODE_SHIFT(config)) |
 		(load_Address << DMA_CODE_ADDRESS_SHIFT(config))            |
 		(source_Select << DMA_SOURCE_SELECT_SHIFT(config))          |
-		( ((uint32_t)address_Flags) << DMA_ADD_BASE_SHIFT(config))  |
+          ( ((uint32_t)address_Flags) << DMA_MASK_OFFSET_SHIFT(config)) |
 		(index_Select << DMA_INDEX_SELECT_SHIFT(config)));
 }
   
@@ -391,11 +395,23 @@ static inline DMAInstruction DMA_LOAD_CACHE_BASE(DMAConfiguration config, uint32
 /* @param source_Select - Which RAM block to load from */
 /* @param add_Base      - Whether to add a previously-loaded base address or not */
 /* @param index_Select - Index counter to use as an offset to the base address */
+/* @param mask_Offset   - Mask the cache offset with the size applied by the Dma_Load_Buffer_Size
+                          instruction, used for circular addressing */
 static inline DMAInstruction DMA_LOAD_CACHE_OFFSET(DMAConfiguration config, uint32_t load_Address,
-	EDMASource source_Select, int add_Base, EDMAIndex index_Select)
+                                                   EDMASource source_Select, int add_Base, EDMAIndex index_Select, int mask_Offset)
 {
-	return DMA_LOAD_CACHE_ADDRESS(config, load_Address, source_Select,
-		(add_Base) ? DMA_ADDRESS_LOAD_OFFSET_BASE : DMA_ADDRESS_LOAD_OFFSET, index_Select);
+  EDMAAddressFlags flags;
+  if (add_Base == 1 && mask_Offset == 0) {
+    flags = DMA_ADDRESS_LOAD_OFFSET_BASE;
+  } else if (add_Base == 0 && mask_Offset == 0) {
+    flags = DMA_ADDRESS_LOAD_OFFSET;
+  } else if (add_Base == 0 && mask_Offset == 1) {
+    flags = DMA_ADDRESS_LOAD_OFFSET_MASKED;
+  } else {
+    flags = DMA_ADDRESS_LOAD_OFFSET_MASKED_BASE;
+  }
+
+  return DMA_LOAD_CACHE_ADDRESS(config, load_Address, source_Select, flags, index_Select);
 }
 
 /* Returns a LOAD_CACHE_ADDRESS instruction, used for configuring cache addressing */
@@ -466,7 +482,7 @@ static inline DMAInstruction DMA_LOAD_BUFFER_ADDRESS(DMAConfiguration config, ui
 	return ((DMA_OPCODE_LOAD_BUFFER_ADDRESS << DMA_OPCODE_SHIFT(config)) |
 		(load_Address << DMA_CODE_ADDRESS_SHIFT(config))            |
 		(source_Select << DMA_SOURCE_SELECT_SHIFT(config))          |
-		( ((uint32_t)address_Flags) << DMA_ADD_BASE_SHIFT(config))  |
+          ( ((uint32_t)address_Flags) << DMA_MASK_OFFSET_SHIFT(config)) |
 		(index_Select << DMA_INDEX_SELECT_SHIFT(config)));
 }
   
@@ -487,11 +503,22 @@ static inline DMAInstruction DMA_LOAD_BUFFER_BASE(DMAConfiguration config, uint3
 /* @param source_Select - Which RAM block to load from */
 /* @param add_Base      - Whether to add a previously-loaded base address or not */
 /* @param index_Select - Index counter to use as an offset to the base address */
+/* @param mask_Offset   - Mask the buffer offset with the size applied by the Dma_Load_Cache_Size
+                          instruction, used for circular addressing */
 static inline DMAInstruction DMA_LOAD_BUFFER_OFFSET(DMAConfiguration config, uint32_t load_Address,
-	EDMASource source_Select, int add_Base, EDMAIndex index_Select)
+                                                    EDMASource source_Select, int add_Base, EDMAIndex index_Select, int mask_Offset)
 {
-	return DMA_LOAD_BUFFER_ADDRESS(config, load_Address, source_Select,
-		(add_Base) ? DMA_ADDRESS_LOAD_OFFSET_BASE : DMA_ADDRESS_LOAD_OFFSET, index_Select);
+  EDMAAddressFlags flags;
+  if (add_Base == 1 && mask_Offset == 0) {
+    flags = DMA_ADDRESS_LOAD_OFFSET_BASE;
+  } else if (add_Base == 0 && mask_Offset == 0) {
+    flags = DMA_ADDRESS_LOAD_OFFSET;
+  } else if (add_Base == 0 && mask_Offset == 1) {
+    flags = DMA_ADDRESS_LOAD_OFFSET_MASKED;
+  } else {
+    flags = DMA_ADDRESS_LOAD_OFFSET_MASKED_BASE;
+  }
+  return DMA_LOAD_BUFFER_ADDRESS(config, load_Address, source_Select, flags, index_Select);
 }
 
 /* Returns a LOAD_BUFFER_ADDRESS instruction, used for configuring cache addressing */
