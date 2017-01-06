@@ -107,6 +107,7 @@ typedef enum {
   MCLK_DIVIDER,
   PIN_LOOPBACK,
   TDM_LOOPBACK,
+  CHANNEL_SWAP, 
   NUM_BITMASK_ENTRIES,
 } AudioTdmBitMask;
 
@@ -126,6 +127,7 @@ typedef struct {
   uint32_t mclkDivider;
   uint32_t pinLoopback;
   uint32_t tdmLoopback;
+  uint32_t channelSwap;
   AudioTdmBitMask bitMask;
 } AudioTdmControl;
 
