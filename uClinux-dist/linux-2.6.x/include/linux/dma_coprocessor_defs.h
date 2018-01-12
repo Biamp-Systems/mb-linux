@@ -773,6 +773,8 @@ typedef struct {
   uint32_t hasStatusFifo;
   uint32_t dataByteWidth;
   uint32_t parameterMap;
+  uint32_t cacheWords;
+  uint32_t cacheInterfaces;
 } DMACapabilities;
 
 #define DMA_IOC_GET_CAPS      _IOR(DMA_IOC_CHAR, 0x0A, DMACapabilities)
