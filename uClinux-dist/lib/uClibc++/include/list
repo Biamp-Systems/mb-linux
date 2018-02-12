@@ -606,7 +606,9 @@ namespace std{
 		//Insert at begining special case
 		if(position == begin()){
 
-			i.link_struct()->previous->next = i.link_struct()->next;
+			if (0 != i.link_struct()->previous) {
+				i.link_struct()->previous->next = i.link_struct()->next;
+			}
 			i.link_struct()->next->previous = i.link_struct()->previous;
 
 			i.link_struct()->previous = 0;
