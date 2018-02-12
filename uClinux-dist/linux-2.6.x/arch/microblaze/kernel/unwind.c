@@ -256,8 +256,8 @@ static void microblaze_unwind_inner(struct task_struct *task,
 		}
 
 		/* Stop when we reach anything not part of the kernel */
-		if (!kernel_text_address(pc))
-			break;
+//		if (!kernel_text_address(pc))
+//			break;
 
 		if (lookup_prev_stack_frame(fp, pc, leaf_return, &next_fp,
 					    &next_pc) == 0) {

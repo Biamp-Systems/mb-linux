@@ -48,6 +48,7 @@
 #include <linux/tracehook.h>
 #include <linux/fs_struct.h>
 #include <linux/init_task.h>
+#include <linux/stacktrace.h>
 #include <trace/sched.h>
 
 #include <asm/uaccess.h>
@@ -890,6 +891,31 @@ NORET_TYPE void do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+	struct file * file;
+  int retval;
+	struct linux_binfmt * binfmt;
+
+  if (code >= 1 && code <= 64) {
+    printk("do_exit: %s code: %d\n", tsk->comm, code);
+		struct stack_trace trace;
+		unsigned long entries[16];
+
+		trace.nr_entries = 0;
+		trace.max_entries = ARRAY_SIZE(entries);
+		trace.entries = entries;
+		trace.skip = 0;
+
+		save_stack_trace(&trace);
+		print_stack_trace(&trace, 0);
+
+ 		file = filp_open("/tmp/coredump",
+				 O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE, 0600);
+
+	  binfmt = current->binfmt;
+	  retval = binfmt->core_dump(code, task_pt_regs(current), file, RLIM_INFINITY);
+    printk("cordump returned %d\n", retval);
+  }
+
 
 	profile_task_exit(tsk);
 
