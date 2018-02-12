@@ -30,6 +30,7 @@
 #include <asm/system.h>
 #include <asm/prom.h>
 #include <asm/pgtable.h>
+#include <asm/mmu_context.h>
 
 DEFINE_PER_CPU(unsigned int, KSP);	/* Saved kernel stack pointer */
 DEFINE_PER_CPU(unsigned int, KM);	/* Kernel/user mode */
@@ -124,6 +125,43 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 /* clearing bss section */
 	memset(__bss_start, 0, __bss_stop-__bss_start);
 	memset(_ssbss, 0, _esbss-_ssbss);
+
+#ifdef CONFIG_MPU
+  /* Static MPU mapping to protect kernel code */
+  tlb_write(0, 0x88000340, 0x88000308); /* 4M is R/W/X by zone 0 (kernel) */
+  tlb_write(1, 0x88400340, 0x88400318); /* 4M is R/W/X by zone 1 (user or kernel) */
+  tlb_write(2, 0x88800340, 0x88800318); /* 4M is R/W/X by zone 1 (user or kernel) */
+  tlb_write(3, 0x88C00340, 0x88C00318); /* 4M is R/W/X by zone 1 (user or kernel) */
+  tlb_write(4, 0x890003C0, 0x89000318); /* 16M is R/W/X by zone 1 (user or kernel) */
+  tlb_write(5, 0x8A0003C0, 0x8A000318); /* 16M is R/W/X by zone 1 (user or kernel) */
+  tlb_write(6, 0x8B0003C0, 0x8B000318); /* 16M is R/W/X by zone 1 (user or kernel) */
+
+  tlb_write(7, 0x00000140, 0x00000308); /* 16K is R/W/X by zone 0 (kernel, exception table) */
+  tlb_write(8, 0x820003C0, 0x82000308); /* 16M is R/W/X by zone 0 (kernel, PLB devicees) */
+  tlb_write(9, 0x870003C0, 0x87000308); /* 16M is R/W/X by zone 0 (kernel, flash) */
+
+  /* Init PID to zero */
+  asm volatile (
+    "mts rpid, r0\n"
+    "bri 4\n");
+
+  /* Init ZPR to allow kernel only for zone 0 and kernel/user for zone 1 */
+  asm volatile (
+    "mts rzpr, %0\n"
+    "bri 4\n"
+    :: "r" (0x10000000));
+
+#define MSR_VM_MASK  0x00002000
+#define MSR_VMS_MASK 0x00004000
+#define MSR_EE_MASK  0x00000100
+
+  /* Enable MPU */
+  asm volatile (
+    "mfs %0, rmsr\n"
+    "ori %0, %0, %1\n"
+    "mts rmsr, %0\n"
+    "bri 4\n" : "=r"(msr) : "i" (MSR_VM_MASK | MSR_VMS_MASK | MSR_EE_MASK));
+#endif
 
 	/* Copy command line passed from bootloader */
 #ifndef CONFIG_CMDLINE_BOOL

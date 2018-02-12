@@ -99,6 +99,15 @@ config NO_MMU
 	depends on !MMU
 	default y
 
+comment "Memory Protection Unit"
+config MPU
+  bool "Enable the memory protection unit"
+  depends on !MMU
+  default n
+  help
+    Use the processor's MPU to protect applications from accessing
+    memory they do not own.
+
 comment "Boot options"
 
 config CMDLINE_BOOL

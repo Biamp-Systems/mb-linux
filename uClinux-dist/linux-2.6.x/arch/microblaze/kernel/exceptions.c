@@ -33,6 +33,14 @@
 #define MICROBLAZE_FPU_EXCEPTION	0x06
 #define MICROBLAZE_PRIVILEGED_EXCEPTION	0x07
 
+#ifdef CONFIG_MPU
+/* NOTE: For MMU these are handled in assembly instead */
+#define MICROBLAZE_DATA_STORAGE_EXCEPTION 0x10
+#define MICROBLAZE_INSTRUCTION_STORAGE_EXCEPTION 0x11
+#define MICROBLAZE_DATA_TLB_MISS_EXCEPTION 0x12
+#define MICROBLAZE_INSTRUCTION_TLB_MISS_EXCEPTION 0x13
+#endif
+
 static DEFINE_SPINLOCK(die_lock);
 
 void die(const char *str, struct pt_regs *fp, long err)
@@ -142,6 +150,18 @@ asmlinkage void full_exception(struct pt_regs *regs, unsigned int type,
 			_exception(SIGILL, regs, ILL_PRVOPC, addr);
 		}
 		break;
+#endif
+#ifdef CONFIG_MPU
+/* NOTE: For MMU these are handled in assembly instead */
+  case MICROBLAZE_DATA_STORAGE_EXCEPTION:
+  case MICROBLAZE_INSTRUCTION_STORAGE_EXCEPTION:
+  case MICROBLAZE_DATA_TLB_MISS_EXCEPTION:
+  case MICROBLAZE_INSTRUCTION_TLB_MISS_EXCEPTION:
+		printk(KERN_WARNING "Exception %02x PC=%08x in %s mode.\n",
+      type, (unsigned int) addr,
+			kernel_mode(regs) ? "kernel" : "user");
+		_exception(SIGBUS, regs, BUS_ADRERR, addr);
+    break;
 #endif
 	default:
 	/* FIXME what to do in unexpected exception */

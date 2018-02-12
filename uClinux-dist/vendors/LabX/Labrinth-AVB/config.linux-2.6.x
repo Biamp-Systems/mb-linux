@@ -169,6 +169,11 @@ CONFIG_SCHED_HRTICK=y
 CONFIG_NO_MMU=y
 
 #
+# Memory Protection Unit
+#
+CONFIG_MPU=y
+
+#
 # Boot options
 #
 # CONFIG_CMDLINE_BOOL is not set

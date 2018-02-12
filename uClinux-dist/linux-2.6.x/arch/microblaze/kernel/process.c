@@ -131,6 +131,16 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 	memset(&ti->cpu_context, 0, sizeof(struct cpu_context));
 	ti->cpu_context.r1 = (unsigned long)childregs;
 	ti->cpu_context.msr = (unsigned long)childregs->msr;
+#ifdef CONFIG_MPU
+	if (!kernel_mode(regs))
+	{
+		childregs->msr |= MSR_UMS;
+		childregs->msr &= ~MSR_VM;
+		childregs->msr |= MSR_VMS;
+		ti->cpu_context.msr = (childregs->msr|MSR_VM);
+		ti->cpu_context.msr &= ~MSR_UMS; /* switch_to to kernel mode */
+	}
+#endif
 #else
 
 	/* if creating a kernel thread then update the current reg (we don't
@@ -236,7 +246,7 @@ void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long usp)
 	regs->pc = pc;
 	regs->r1 = usp;
 	regs->pt_mode = 0;
-#ifdef CONFIG_MMU
+#if defined(CONFIG_MMU) || defined(CONFIG_MPU)
 	regs->msr |= MSR_UMS;
 #endif
 }

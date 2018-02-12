@@ -30,7 +30,7 @@
 #define FSR_UF		(1<<1) /* Underflow */
 #define FSR_DO		(1<<0) /* Denormalized operand error */
 
-# ifdef CONFIG_MMU
+# if defined(CONFIG_MMU) || defined(CONFIG_MPU)
 /* Machine State Register (MSR) Fields */
 # define MSR_UM		(1<<11) /* User Mode */
 # define MSR_UMS	(1<<12) /* User Mode Save */
